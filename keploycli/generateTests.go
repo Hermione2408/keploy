@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
     "time"
+	"os"
     "path/filepath"
     "github.com/ghodss/yaml"
     
@@ -25,8 +26,12 @@ func GenerateTests() {
 
 	// Create a gRPC client.
 	client := pb.NewTestGenerationServiceClient(conn)
-
-    schemaURI:= "/Users/charankamarapu/sample-projects/samples-java/src/main/java/com/example/demo/controller/schema2.json"
+	mydir, err := os.Getwd()
+	if err != nil {
+        fmt.Println(err)
+    }
+    schemaURI:= mydir + "/keploycli/schema.json"
+	fmt.Println(schemaURI)
     extension := filepath.Ext(schemaURI)
 
     var schemaContent string
