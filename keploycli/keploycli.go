@@ -25,6 +25,16 @@ func CLI(version string, conf *config.Config, kServices *service.KServices, logg
 		},
 	}
 
+	var generateTests = &cobra.Command{
+		Use:   "generate-tests",
+		Short: "generate keploy tests",
+		Run: func(cmd *cobra.Command, args []string) {
+			GenerateTests()
+		},
+	}
+
+	rootCmd.AddCommand(generateTests) 
+
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
 		os.Exit(1)

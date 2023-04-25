@@ -1,4 +1,5 @@
 syntax = "proto3";
+
 option java_package = "io.keploy.grpc.stubs";
 option go_package = "go.keploy.io/server/grpc/regression";
 package services;
@@ -234,6 +235,53 @@ message StartMockResp {
   bool Exists = 1;
 }
 
+message GenerateTestsReq {
+  string schemaContent = 1;
+  string baseURL = 2;
+  string check = 3;
+  string header = 4;
+  string authType = 5;
+  string auth = 6;
+}
+
+message GenerateTestsResp {
+  bool response = 1;
+  string output = 2;
+}
+
+
+message ScenarioTestReq {
+  string method = 1;
+  string url = 2;
+  map<string, string> headers = 4;
+  map<string, string> params = 5;
+  string json = 6;
+}
+
+message ScenarioTestResp {
+    int32 status_code = 1;
+    map<string, string> headers = 2;
+    bytes content = 3;
+    int64 elapsed = 4;
+}
+
+enum Event {
+  TestGenerationTrigger = 0;
+  ScenarioTestResponse = 1;
+}
+
+message KeployToServer {
+  Event event = 1;
+  GenerateTestsReq generateTestsReq = 2;
+  ScenarioTestResp scenarioTestResp = 3;
+}
+
+message ServerToKeploy {
+  Event event = 1;
+  ScenarioTestReq scenarioTestReq = 2;
+  GenerateTestsResp generateTestsResp = 3;
+}
+
 service RegressionService{
   rpc End (endRequest) returns (endResponse);
   rpc Start (startRequest) returns (startResponse);
@@ -245,4 +293,8 @@ service RegressionService{
   rpc PutMock (PutMockReq) returns (PutMockResp);
   rpc GetMocks (GetMockReq) returns (getMockResp);
   rpc StartMocking (StartMockReq) returns (StartMockResp);
+}
+
+service TestGenerationService {
+  rpc GenerateTests(stream KeployToServer) returns (stream ServerToKeploy);
 }
