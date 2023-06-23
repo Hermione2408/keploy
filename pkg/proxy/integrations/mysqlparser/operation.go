@@ -2,6 +2,7 @@ package mysqlparser
 
 import (
 	"bytes"
+	"crypto/sha1"
 	"encoding/binary"
 	"fmt"
 )
@@ -54,13 +55,156 @@ type MySQLPacket struct {
 	Payload []byte
 }
 
+const (
+	MaxPacketSize = 1<<24 - 1
+)
+
+type CapabilityFlags uint32
+
+const (
+	CLIENT_LONG_PASSWORD CapabilityFlags = 1 << iota
+	CLIENT_FOUND_ROWS
+	CLIENT_LONG_FLAG
+	CLIENT_CONNECT_WITH_DB
+	CLIENT_NO_SCHEMA
+	CLIENT_COMPRESS
+	CLIENT_ODBC
+	CLIENT_LOCAL_FILES
+	CLIENT_IGNORE_SPACE
+	CLIENT_PROTOCOL_41
+	CLIENT_INTERACTIVE
+	CLIENT_SSL = 0x00000800
+	CLIENT_IGNORE_SIGPIPE
+	CLIENT_TRANSACTIONS
+	CLIENT_RESERVED
+	CLIENT_SECURE_CONNECTION
+	CLIENT_MULTI_STATEMENTS = 1 << (iota + 2)
+	CLIENT_MULTI_RESULTS
+	CLIENT_PS_MULTI_RESULTS
+	CLIENT_PLUGIN_AUTH
+	CLIENT_CONNECT_ATTRS
+	CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA
+	CLIENT_CAN_HANDLE_EXPIRED_PASSWORDS
+	CLIENT_SESSION_TRACK
+	CLIENT_DEPRECATE_EOF
+)
+
+type HandshakeResponse41 struct {
+	CapabilityFlags   CapabilityFlags
+	MaxPacketSize     uint32
+	CharacterSet      uint8
+	Reserved          [23]byte
+	Username          string
+	LengthEncodedInt  uint8
+	AuthResponse      []byte
+	Database          string
+	AuthPluginName    string
+	ConnectAttributes map[string]string
+}
+
+func NewHandshakeResponsePacket(handshake *HandshakeV10Packet, authMethod string, password string) *HandshakeResponse41 {
+	authResponse := GenerateAuthResponse(password, handshake.AuthPluginData)
+	return &HandshakeResponse41{
+		CapabilityFlags: CapabilityFlags(handshake.CapabilityFlags),
+		MaxPacketSize:   MaxPacketSize,
+		CharacterSet:    0x21, // utf8_general_ci
+		Username:        "user",
+		AuthResponse:    authResponse,
+		Database:        "shorturl_db",
+		AuthPluginName:  authMethod,
+	}
+}
+func GenerateAuthResponse(password string, salt []byte) []byte {
+	// 1. Hash the password
+	passwordHash := sha1.Sum([]byte(password))
+
+	// 2. Hash the salt and the password hash
+	finalHash := sha1.Sum(append(salt, passwordHash[:]...))
+
+	return finalHash[:]
+}
+
+func (p *HandshakeResponse41) EncodeHandshake() ([]byte, error) {
+	length := 4 + 4 + 1 + 23 + len(p.Username) + 1 + 1 + len(p.AuthResponse) + len(p.Database) + 1 + len(p.AuthPluginName) + 1
+	buffer := make([]byte, length)
+	offset := 0
+
+	binary.LittleEndian.PutUint32(buffer[offset:], uint32(p.CapabilityFlags))
+	offset += 4
+	binary.LittleEndian.PutUint32(buffer[offset:], p.MaxPacketSize)
+	offset += 4
+	buffer[offset] = p.CharacterSet
+	offset += 1 + 23
+	offset += copy(buffer[offset:], p.Username)
+	buffer[offset] = 0x00
+	offset++
+	buffer[offset] = uint8(len(p.AuthResponse))
+	offset++
+	offset += copy(buffer[offset:], p.AuthResponse)
+	offset += copy(buffer[offset:], p.Database)
+	buffer[offset] = 0x00
+	offset++
+	offset += copy(buffer[offset:], p.AuthPluginName)
+	buffer[offset] = 0x00
+
+	return buffer, nil
+}
+
+type SSLRequestPacket struct {
+	Capabilities  uint32
+	MaxPacketSize uint32
+	CharacterSet  uint8
+	Reserved      [23]byte
+}
+
+func NewSSLRequestPacket(capabilities uint32, maxPacketSize uint32, characterSet uint8) *SSLRequestPacket {
+	// Ensure the SSL capability flag is set
+	capabilities |= CLIENT_SSL
+
+	if characterSet == 0 {
+		characterSet = 33 // Set default to utf8mb4 if not specified.
+	}
+
+	return &SSLRequestPacket{
+		Capabilities:  capabilities,
+		MaxPacketSize: maxPacketSize,
+		CharacterSet:  characterSet,
+		Reserved:      [23]byte{},
+	}
+}
+
+func (p *SSLRequestPacket) Encode() ([]byte, error) {
+	buffer := new(bytes.Buffer)
+
+	err := binary.Write(buffer, binary.LittleEndian, p.Capabilities)
+	if err != nil {
+		return nil, err
+	}
+
+	err = binary.Write(buffer, binary.LittleEndian, p.MaxPacketSize)
+	if err != nil {
+		return nil, err
+	}
+
+	err = binary.Write(buffer, binary.LittleEndian, p.CharacterSet)
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = buffer.Write(p.Reserved[:])
+	if err != nil {
+		return nil, err
+	}
+
+	return buffer.Bytes(), nil
+}
 func DecodeMySQLPacket(data []byte) (string, MySQLPacketHeader, interface{}, error) {
 	header, err := decodeMySQLPacketHeader(data)
 	if err != nil {
 		return "", MySQLPacketHeader{}, nil, err
 	}
 
-	data = data[4:] // Skip the 4-byte header
+	data = data[4:]
 
 	var packet interface{}
 	var packetType string
@@ -94,7 +238,7 @@ func decodeMySQLPacketHeader(data []byte) (MySQLPacketHeader, error) {
 		return MySQLPacketHeader{}, fmt.Errorf("data too short")
 	}
 
-	length := binary.LittleEndian.Uint32(data[:3])
+	length := binary.LittleEndian.Uint32(data[:4])
 	sequenceID := data[3]
 
 	return MySQLPacketHeader{PayloadLength: length, SequenceID: sequenceID}, nil
@@ -123,15 +267,16 @@ func decodeMySQLHandshakeV10(data []byte) (*HandshakeV10Packet, error) {
 
 	data = data[1:]
 
-	packet.CapabilityFlags = uint32(binary.LittleEndian.Uint16(data))
-	data = data[2:]
+	if len(data) < 4 {
+		return nil, fmt.Errorf("handshake packet too short")
+	}
+	packet.CapabilityFlags = binary.LittleEndian.Uint32(data)
+	data = data[4:]
 
 	packet.CharacterSet = data[0]
 	data = data[1:]
 
 	packet.StatusFlags = binary.LittleEndian.Uint16(data)
-	data = data[2:]
-	packet.CapabilityFlags |= uint32(binary.LittleEndian.Uint16(data)) << 16
 	data = data[2:]
 
 	authPluginDataLen := int(data[0])
@@ -151,6 +296,14 @@ func decodeMySQLHandshakeV10(data []byte) (*HandshakeV10Packet, error) {
 	packet.AuthPluginName = string(data[:idx])
 
 	return packet, nil
+}
+func (packet *HandshakeV10Packet) ShouldUseSSL() bool {
+	return (packet.CapabilityFlags & CLIENT_SSL) != 0
+}
+
+func (packet *HandshakeV10Packet) GetAuthMethod() string {
+	// It will return the auth method
+	return packet.AuthPluginName
 }
 
 func decodeMySQLQuery(data []byte) (*QueryPacket, error) {
@@ -189,7 +342,7 @@ func decodeLengthEncodedInteger(b []byte) (value uint64, isNull bool, n int, err
 		}
 		return binary.LittleEndian.Uint64(b[1:9]), false, 9, nil
 	case b[0] == 0xff:
-		return 0, true, 1, nil // NULL is encoded as length byte 0xff
+		return 0, true, 1, nil
 	default:
 		return 0, false, 0, fmt.Errorf("invalid length-encoded integer")
 	}
@@ -236,8 +389,6 @@ func decodeMySQLErr(data []byte) (*ERRPacket, error) {
 	if len(data) < 9 {
 		return nil, fmt.Errorf("ERR packet too short")
 	}
-
-	// First byte is the header and should be 0xff
 	if data[0] != 0xff {
 		return nil, fmt.Errorf("invalid ERR packet header: %x", data[0])
 	}
@@ -245,15 +396,11 @@ func decodeMySQLErr(data []byte) (*ERRPacket, error) {
 	packet := &ERRPacket{}
 	packet.ErrorCode = binary.LittleEndian.Uint16(data[1:3])
 
-	// SQL state marker and SQL state code
 	if data[3] != '#' {
 		return nil, fmt.Errorf("invalid SQL state marker: %c", data[3])
 	}
 	packet.SQLState = string(data[4:9])
-
-	// The error message is the rest of the packet
 	packet.ErrorMessage = string(data[9:])
-
 	return packet, nil
 }
 

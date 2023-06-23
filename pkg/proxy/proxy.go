@@ -1,5 +1,6 @@
 package proxy
 
+// fix line 464
 import (
 	"bufio"
 	"crypto"
@@ -318,11 +319,12 @@ func handleTLSConnection(conn net.Conn) (net.Conn, error) {
 
 	// Create a TLS configuration
 	config := &tls.Config{
-		GetCertificate: certForClient,
+		InsecureSkipVerify: true,
+		GetCertificate:     certForClient,
 	}
 
 	// Wrap the TCP connection with TLS
-	tlsConn := tls.Server(conn, config)
+	tlsConn := tls.Client(conn, config)
 
 	req := make([]byte, 1024)
 	fmt.Println("before the parsed req: ", string(req))
@@ -333,11 +335,13 @@ func handleTLSConnection(conn net.Conn) (net.Conn, error) {
 	}
 	fmt.Println("after the parsed req: ", string(req))
 	// Perform the TLS handshake
-	// err = tlsConn.Handshake()
-	// if err != nil {
-	// 	log.Println("Error performing TLS handshake:", err)
-	// 	return
-	// }
+	err = tlsConn.Handshake()
+	if err != nil {
+		log.Println("Error performing TLS handshake:", err)
+		return nil, err
+	}
+	state := tlsConn.ConnectionState()
+	fmt.Printf("TLS version: %x\n", state.Version)
 
 	// Use the tlsConn for further communication
 	// For example, you can read and write data using tlsConn.Read() and tlsConn.Write()
@@ -379,95 +383,211 @@ func (ps *ProxySet) handleConnection(conn net.Conn, port uint32) {
 		ps.logger.Error("failed to fetch the state of proxy", zap.Any("port", port))
 		return
 	}
-	//reader := bufio.NewReader(conn)
-	//fmt.Println("request buffer", reader)
 
 	initialData := make([]byte, 5)
 	fmt.Println("initial buffer", initialData)
 
-	//testBuffer, err := reader.Peek(len(initialData))
-	// fmt.Println("request buffer", string(testBuffer))
+	//checking for the destination port of mysql
+	if proxyState.Dest_port == 3306 {
+		var (
+			dst           net.Conn
+			actualAddress = fmt.Sprintf("%v:%v", util.ToIPAddressStr(proxyState.Dest_ip), proxyState.Dest_port)
+		)
+		dst, err = net.Dial("tcp", actualAddress)
+		if err != nil {
+			ps.logger.Error("failed to dial the connection to destination server", zap.Error(err), zap.Any("proxy port", port), zap.Any("server address", actualAddress))
+			conn.Close()
+			return
+		}
+		handshakeResponseBuffer, err := util.ReadBytes(dst)
+		if err != nil {
+			ps.logger.Error("failed to read reply from the mysql server", zap.Error(err), zap.String("mysql server address", dst.RemoteAddr().String()))
+			return
+		}
 
-	// if err != nil {
-	// 	ps.logger.Error("failed to read the request message in proxy", zap.Error(err), zap.Any("proxy port", port))
-	// 	return
-	// }
+		opr, _, _, err := mysqlparser.DecodeMySQLPacket(handshakeResponseBuffer)
+		if err != nil {
+			ps.logger.Error("failed to decode the mysql packet from the server", zap.Error(err))
+			return
+		}
+		_, err = conn.Write(handshakeResponseBuffer)
 
-	// isTLS := isTLSHandshake(testBuffer)
-	// if isTLS {
-	// 	fmt.Println("request buffer inside handle tls", string(testBuffer))
+		if err != nil {
+			ps.logger.Error("failed to write handshake request to client", zap.Error(err))
+			return
+		}
+		handshakeResponseFromClient, err := util.ReadBytes(conn)
+		if err != nil {
+			ps.logger.Error("failed to read handshake respnse from client", zap.Error(err))
+			return
+		}
+		fmt.Printf("handshake respnse", string(handshakeResponseFromClient))
+		a, b, c, d := mysqlparser.DecodeMySQLPacket(handshakeResponseFromClient)
+		fmt.Printf("handshake respnse", string(a), b, c, d)
 
-	// 	connWrapped := Conn{r: *reader, Conn: conn}
-	// 	conn, err = handleTLSConnection(&connWrapped)
-	// 	if err != nil {
-	// 		ps.logger.Error("failed to handle TLS connection", zap.Error(err))
-	// 		return
-	// 	}
+		_, err = dst.Write(handshakeResponseFromClient)
+		if err != nil {
+			ps.logger.Error("failed to write handshake respnse to server", zap.Error(err))
+			return
+		}
 
-	// }
-	//fmt.Println("request buffer after istls", string(testBuffer))
+		if opr != "MySQLHandshakeV10" {
+			ps.logger.Error("expected a Handshake packet from the server", zap.String("operation", opr))
+			return
+		}
 
-	buffer, err := util.ReadBytes(conn)
-	if err != nil {
-		ps.logger.Error("failed to read the request message in proxy", zap.Error(err), zap.Any("proxy port", port))
-		return
-	}
-	fmt.Println("request buffer after util", string(buffer))
+		// handshake := handshakePacket.(*mysqlparser.HandshakeV10Packet)
 
-	// dst stores the connection with actual destination for the outgoing network call
-	var (
-		dst           net.Conn
-		actualAddress = fmt.Sprintf("%v:%v", util.ToIPAddressStr(proxyState.Dest_ip), proxyState.Dest_port)
-	)
-	//Dialing for tls connection
-	//if isTLS {
-	// 	fmt.Println("isTLS: ", isTLS)
-	// 	config := &tls.Config{
-	// 		InsecureSkipVerify: false,
-	// 		ServerName:         destinationUrl,
-	// 	}
-	// 	dst, err = tls.Dial("tcp", fmt.Sprintf("%v:%v", destinationUrl, proxyState.Dest_port), config)
-	// 	if err != nil {
-	// 		ps.logger.Error("failed to dial the connection to destination server", zap.Error(err), zap.Any("proxy port", port), zap.Any("server address", actualAddress))
-	// 		conn.Close()
-	// 		return
-	// 	}
-	// } else {
-	dst, err = net.Dial("tcp", actualAddress)
-	if err != nil {
-		ps.logger.Error("failed to dial the connection to destination server", zap.Error(err), zap.Any("proxy port", port), zap.Any("server address", actualAddress))
-		conn.Close()
-		return
-	}
-	//	}
+		// // useSSL := handshake.ShouldUseSSL()
+		// // authMethod := handshake.GetAuthMethod()
 
-	fmt.Println("request buffer", string(buffer))
+		var tlsConn net.Conn = conn
 
-	switch {
-	case httpparser.IsOutgoingHTTP(buffer):
-		// capture the otutgoing http text messages]
-		ps.hook.AppendDeps(httpparser.CaptureHTTPMessage(buffer, conn, dst, ps.logger))
-	case mongoparser.IsOutgoingMongo(buffer):
-		deps := mongoparser.CaptureMongoMessage(buffer, conn, dst, ps.logger)
+		// if useSSL {
+		// 	fmt.Println("SSL supported")
+
+		// 	capabilities := handshake.CapabilityFlags | mysqlparser.CLIENT_SSL
+		// 	maxPacketSize := uint32(16 * 1024 * 1024) // 16MB
+		// 	charset := handshake.CharacterSet
+
+		// 	sslRequest := mysqlparser.NewSSLRequestPacket(capabilities, maxPacketSize, charset)
+
+		// 	sslRequestBuffer, err := sslRequest.Encode()
+		// 	if err != nil {
+		// 		ps.logger.Error("failed to encode SSL request packet", zap.Error(err))
+		// 		return
+		// 	}
+
+		// 	// Writing the SSLRequest to the server
+		// 	_, err = dst.Write(sslRequestBuffer)
+		// 	if err != nil {
+		// 		ps.logger.Error("failed to send SSL request packet to the server", zap.Error(err), zap.String("server address", dst.RemoteAddr().String()))
+		// 		return
+		// 	}
+
+		// 	tlsConn, err = handleTLSConnection(conn)
+		// 	if err != nil {
+		// 		ps.logger.Error("failed to handle TLS connection", zap.Error(err))
+		// 		return
+		// 	}
+		// }
+		// password := "password"
+
+		// // Create HandshakeResponse
+		// responsePacket := mysqlparser.NewHandshakeResponsePacket(handshake, authMethod, password)
+
+		// responseBufferForHandshake, err := responsePacket.EncodeHandshake()
+
+		// if err != nil {
+		// 	ps.logger.Error("failed to encode handshake response packet", zap.Error(err))
+		// 	return
+		// }
+
+		// timeout := 5 * time.Second
+		// tlsConn.SetWriteDeadline(time.Now().Add(timeout))
+
+		// // Send the HandshakeResponse over the connection
+		// n, err := tlsConn.Write(responseBufferForHandshake)
+		// if err != nil {
+		// 	ps.logger.Error("failed to send handshake response packet to the server", zap.Error(err))
+		// 	return
+		// } else if n != len(responseBufferForHandshake) {
+		// 	ps.logger.Error("could not write the entire handshake response to the server", zap.Int("bytesWritten", n), zap.Int("expectedBytesWritten", len(responseBufferForHandshake)))
+		// 	return
+		// }
+
+		deps := mysqlparser.CaptureMySQLMessage([]byte{}, tlsConn, dst, ps.logger)
+
 		for _, v := range deps {
 			ps.hook.AppendDeps(v)
 		}
-	case mysqlparser.IsOutgoingMySQL(buffer):
-		deps := mysqlparser.CaptureMySQLMessage(buffer, conn, dst, ps.logger)
-		for _, v := range deps {
-			ps.hook.AppendDeps(v)
+
+	} else {
+
+		reader := bufio.NewReader(conn)
+		fmt.Println("request buffer", reader)
+
+		initialData := make([]byte, 5)
+		fmt.Println("initial buffer", initialData)
+
+		testBuffer, err := reader.Peek(len(initialData))
+		fmt.Println("request buffer", string(testBuffer))
+
+		if err != nil {
+			ps.logger.Error("failed to read the request message in proxy", zap.Error(err), zap.Any("proxy port", port))
+			return
 		}
 
-	default:
+		isTLS := isTLSHandshake(testBuffer)
+		if isTLS {
+			fmt.Println("request buffer inside handle tls", string(testBuffer))
+
+			connWrapped := Conn{r: *reader, Conn: conn}
+			conn, err = handleTLSConnection(&connWrapped)
+			if err != nil {
+				ps.logger.Error("failed to handle TLS connection", zap.Error(err))
+				return
+			}
+
+		}
+		fmt.Println("request buffer after istls", string(testBuffer))
+
+		buffer, err := util.ReadBytes(conn)
+		if err != nil {
+			ps.logger.Error("failed to read the request message in proxy", zap.Error(err), zap.Any("proxy port", port))
+			return
+		}
+		fmt.Println("request buffer after util", string(buffer))
+
+		// dst stores the connection with actual destination for the outgoing network call
+		var (
+			dst           net.Conn
+			actualAddress = fmt.Sprintf("%v:%v", util.ToIPAddressStr(proxyState.Dest_ip), proxyState.Dest_port)
+		)
+		//Dialing for tls connection
+		//if isTLS {
+		// 	fmt.Println("isTLS: ", isTLS)
+		// 	config := &tls.Config{
+		// 		InsecureSkipVerify: false,
+		// 		ServerName:         destinationUrl,
+		// 	}
+		// 	dst, err = tls.Dial("tcp", fmt.Sprintf("%v:%v", destinationUrl, proxyState.Dest_port), config)
+		// 	if err != nil {
+		// 		ps.logger.Error("failed to dial the connection to destination server", zap.Error(err), zap.Any("proxy port", port), zap.Any("server address", actualAddress))
+		// 		conn.Close()
+		// 		return
+		// 	}
+		// } else {
+		dst, err = net.Dial("tcp", actualAddress)
+		if err != nil {
+			ps.logger.Error("failed to dial the connection to destination server", zap.Error(err), zap.Any("proxy port", port), zap.Any("server address", actualAddress))
+			conn.Close()
+			return
+		}
+		//	}
+
+		fmt.Println("request buffer", string(buffer))
+
+		switch {
+		case httpparser.IsOutgoingHTTP(buffer):
+			// capture the otutgoing http text messages]
+			ps.hook.AppendDeps(httpparser.CaptureHTTPMessage(buffer, conn, dst, ps.logger))
+		case mongoparser.IsOutgoingMongo(buffer):
+			deps := mongoparser.CaptureMongoMessage(buffer, conn, dst, ps.logger)
+			for _, v := range deps {
+				ps.hook.AppendDeps(v)
+			}
+		default:
+		}
+		// releases the occupied proxy
+		proxyState.Occupied = 0
+		proxyState.Dest_ip = 0
+		proxyState.Dest_port = 0
+		ps.hook.UpdateProxyState(uint32(indx), proxyState)
+		// err = ps.hook.ProxyPorts.Update(uint32(indx), proxyState, ebpf.UpdateLock)
+		// if err != nil {
+		// 	ps.logger.Error("failed to release the occupied proxy", zap.Error(err), zap.Any("proxy port", port))
+		// 	return
+		// }
 	}
-	// releases the occupied proxy
-	proxyState.Occupied = 0
-	proxyState.Dest_ip = 0
-	proxyState.Dest_port = 0
-	ps.hook.UpdateProxyState(uint32(indx), proxyState)
-	// err = ps.hook.ProxyPorts.Update(uint32(indx), proxyState, ebpf.UpdateLock)
-	// if err != nil {
-	// 	ps.logger.Error("failed to release the occupied proxy", zap.Error(err), zap.Any("proxy port", port))
-	// 	return
-	// }
 }

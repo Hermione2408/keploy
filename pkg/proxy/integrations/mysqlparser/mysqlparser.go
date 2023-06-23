@@ -1,6 +1,7 @@
 package mysqlparser
 
 import (
+	"fmt"
 	"net"
 
 	"go.keploy.io/server/pkg/models"
@@ -18,21 +19,34 @@ func IsOutgoingMySQL(buffer []byte) bool {
 }
 
 func CaptureMySQLMessage(requestBuffer []byte, clientConn, destConn net.Conn, logger *zap.Logger) []*models.Mock {
-	_, err := destConn.Write(requestBuffer)
-	if err != nil {
-		logger.Error("failed to write the request buffer to mysql server", zap.Error(err), zap.String("mysql server address", destConn.RemoteAddr().String()))
-		return nil
-	}
 
+	// After sending the handshake response
 	responseBuffer, err := util.ReadBytes(destConn)
 	if err != nil {
 		logger.Error("failed to read reply from the mysql server", zap.Error(err), zap.String("mysql server address", destConn.RemoteAddr().String()))
 		return nil
 	}
 
+	fmt.Println("This is the response buffer:", string(responseBuffer), responseBuffer)
 	_, err = clientConn.Write(responseBuffer)
+
+	opr, _, packet, err := DecodeMySQLPacket(responseBuffer)
 	if err != nil {
-		logger.Error("failed to write the reply message to mysql client", zap.Error(err))
+		logger.Error("failed to decode the mysql packet from the server", zap.Error(err))
+		return nil
+	}
+
+	if opr == "MySQLOK" {
+		okPacket := packet.(*OKPacket)
+		logger.Info("Received OKPacket", zap.Any("okPacket", okPacket))
+
+	} else if opr == "MySQLErr" {
+		errPacket := packet.(*ERRPacket)
+		logger.Error("Received ERRPacket", zap.Any("errPacket", errPacket))
+		return nil
+
+	} else {
+		logger.Error("Unexpected packet from server", zap.String("operation", opr))
 		return nil
 	}
 
@@ -41,7 +55,7 @@ func CaptureMySQLMessage(requestBuffer []byte, clientConn, destConn net.Conn, lo
 	opr, requestHeader, mysqlRequest, err := DecodeMySQLPacket(requestBuffer)
 	if err != nil {
 		logger.Error("failed to decode the mysql packet from the client", zap.Error(err))
-		return nil
+		// return nil
 	}
 
 	opr, responseHeader, mysqlResp, err := DecodeMySQLPacket(responseBuffer)
@@ -55,7 +69,7 @@ func CaptureMySQLMessage(requestBuffer []byte, clientConn, destConn net.Conn, lo
 	}
 	mysqlMock := &models.Mock{
 		Version: models.V1Beta2,
-		Kind:    models.MySQL,
+		Kind:    models.SQL,
 		Name:    "",
 	}
 	mysqlSpec := &spec.MySQLSpec{
