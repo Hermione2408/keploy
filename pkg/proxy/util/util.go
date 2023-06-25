@@ -39,7 +39,7 @@ func ReadBytes(reader io.Reader) ([]byte, error) {
 		if err != nil && err != io.EOF {
 			return nil, err
 		}
-
+		fmt.Println("number of bytes read in util: ", n)
 		// Append the bytes to the buffer
 		buffer = append(buffer, buf[:n]...)
 
