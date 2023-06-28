@@ -20,6 +20,7 @@ import (
 	"go.keploy.io/server/pkg/hooks"
 	"go.keploy.io/server/pkg/proxy/integrations/httpparser"
 	"go.keploy.io/server/pkg/proxy/integrations/mongoparser"
+	"go.keploy.io/server/pkg/proxy/integrations/mysqlparser"
 	"go.keploy.io/server/pkg/proxy/util"
 	"go.uber.org/zap"
 )
@@ -398,164 +399,17 @@ func (ps *ProxySet) handleConnection(conn net.Conn, port uint32) {
 			conn.Close()
 			return
 		}
-		// QueryContext -> call query on the sql server
-		// conn -> we get query packet -> dst
 
-		// setTimer() {
-		//   util.Read(conn)
-		// }
-
-		// ExecOntext -> Do intial handshake and then calls the query in sql server
-		// dst -> conn -> We get response handhake -> dst -> we get ok packet -> client -> passes query packet -> dst
-		handshakeResponseBuffer, err := util.ReadBytes(dst)
+		deps := mysqlparser.CaptureMySQLMessage([]byte{}, conn, dst, ps.logger)
 		if err != nil {
-			ps.logger.Error("failed to read reply from the mysql server", zap.Error(err), zap.String("mysql server address", dst.RemoteAddr().String()))
+			ps.logger.Error("failed to capture the mysql message", zap.Error(err))
 			return
 		}
-
-		// opr, _, _, err := mysqlparser.DecodeMySQLPacket(handshakeResponseBuffer)
-		// if err != nil {
-		// 	ps.logger.Error("failed to decode the mysql packet from the server", zap.Error(err))
-		// 	return
-		// }
-		_, err = conn.Write(handshakeResponseBuffer)
-
-		if err != nil {
-			ps.logger.Error("failed to write handshake request to client", zap.Error(err))
-			return
+		fmt.Println("the deps for mysql: ", deps)
+		for _, v := range deps {
+			fmt.Println("the deps for mysql: ", v)
+			ps.hook.AppendDeps(v)
 		}
-		handshakeResponseFromClient, err := util.ReadBytes(conn)
-		if err != nil {
-			ps.logger.Error("failed to read handshake respnse from client", zap.Error(err))
-			return
-		}
-		// fmt.Println("handshake respnse", string(handshakeResponseFromClient))
-		// a, b, c, d := mysqlparser.DecodeMySQLPacket(handshakeResponseFromClient)
-		// fmt.Println("handshake respnse", string(a), b, c, d)
-
-		n, err := dst.Write(handshakeResponseFromClient)
-		if err != nil {
-			ps.logger.Error("failed to write handshake respnse to server", zap.Error(err))
-			return
-		}
-		fmt.Println("number of bytes writen to server Conn", n)
-
-
-		okPacket1, err := util.ReadBytes(dst)
-		if err != nil {
-			ps.logger.Error("failed to read packet from server after handshake", zap.Error(err))
-			return
-		}
-		fmt.Println("the packet from mysql server after handshake", string(okPacket1))
-
-		_, err = conn.Write(okPacket1)
-		
-		// n, err = conn.Write([]byte("\x01\x03"))
-		if err != nil {
-			ps.logger.Error("failed to write the packet to mysql client", zap.Error(err))
-			return
-		}
-
-		queryBuffer, err := util.ReadBytes(conn)
-		if err!=nil {
-			ps.logger.Error("failed to read query from the mysql client", zap.Error(err))
-			return
-		}
-
-		fmt.Println("the query for mysql: ", string(queryBuffer))
-
-		n, err = dst.Write(queryBuffer)
-		if err!=nil {
-			ps.logger.Error("failed to write query to mysql server", zap.Error(err))
-			return
-		}
-
-
-
-		// packet2, err := util.ReadBytes(dst)
-		// if err != nil {
-		// 	ps.logger.Error("failed to read the packet ")
-		// }
-		// fmt.Println("the handling after handshake 2: ", string(packet2))
-
-		// fmt.Println("number of bytes writen to clientConn", n)
-		// n, err = conn.Write([]byte("\x01\x03"))
-		// if err != nil {
-		// 	ps.logger.Error("failed to write the packet to mysql client", zap.Error(err))
-		// 	return
-		// }
-		// fmt.Println("number of bytes writen to clientConn", n)
-
-		// if opr != "MySQLHandshakeV10" {
-		// 	ps.logger.Error("expected a Handshake packet from the server", zap.String("operation", opr))
-		// 	return
-		// }
-
-		// handshake := handshakePacket.(*mysqlparser.HandshakeV10Packet)
-
-		// // useSSL := handshake.ShouldUseSSL()
-		// // authMethod := handshake.GetAuthMethod()
-
-		// var tlsConn net.Conn = conn
-
-		// if useSSL {
-		// 	fmt.Println("SSL supported")
-
-		// 	capabilities := handshake.CapabilityFlags | mysqlparser.CLIENT_SSL
-		// 	maxPacketSize := uint32(16 * 1024 * 1024) // 16MB
-		// 	charset := handshake.CharacterSet
-
-		// 	sslRequest := mysqlparser.NewSSLRequestPacket(capabilities, maxPacketSize, charset)
-
-		// 	sslRequestBuffer, err := sslRequest.Encode()
-		// 	if err != nil {
-		// 		ps.logger.Error("failed to encode SSL request packet", zap.Error(err))
-		// 		return
-		// 	}
-
-		// 	// Writing the SSLRequest to the server
-		// 	_, err = dst.Write(sslRequestBuffer)
-		// 	if err != nil {
-		// 		ps.logger.Error("failed to send SSL request packet to the server", zap.Error(err), zap.String("server address", dst.RemoteAddr().String()))
-		// 		return
-		// 	}
-
-		// 	tlsConn, err = handleTLSConnection(conn)
-		// 	if err != nil {
-		// 		ps.logger.Error("failed to handle TLS connection", zap.Error(err))
-		// 		return
-		// 	}
-		// }
-		// password := "password"
-
-		// // Create HandshakeResponse
-		// responsePacket := mysqlparser.NewHandshakeResponsePacket(handshake, authMethod, password)
-
-		// responseBufferForHandshake, err := responsePacket.EncodeHandshake()
-
-		// if err != nil {
-		// 	ps.logger.Error("failed to encode handshake response packet", zap.Error(err))
-		// 	return
-		// }
-
-		// timeout := 5 * time.Second
-		// tlsConn.SetWriteDeadline(time.Now().Add(timeout))
-
-		// // Send the HandshakeResponse over the connection
-		// n, err := tlsConn.Write(responseBufferForHandshake)
-		// if err != nil {
-		// 	ps.logger.Error("failed to send handshake response packet to the server", zap.Error(err))
-		// 	return
-		// } else if n != len(responseBufferForHandshake) {
-		// 	ps.logger.Error("could not write the entire handshake response to the server", zap.Int("bytesWritten", n), zap.Int("expectedBytesWritten", len(responseBufferForHandshake)))
-		// 	return
-		// }
-
-		// deps := mysqlparser.CaptureMySQLMessage([]byte{}, tlsConn, dst, ps.logger)
-
-		// for _, v := range deps {
-		// 	ps.hook.AppendDeps(v)
-		// }
 
 	} else {
 

@@ -3,6 +3,7 @@ package mysqlparser
 import (
 	"fmt"
 	"net"
+	"time"
 
 	"go.keploy.io/server/pkg/models"
 	"go.keploy.io/server/pkg/models/spec"
@@ -18,83 +19,188 @@ func IsOutgoingMySQL(buffer []byte) bool {
 	return int(packetLength) == len(buffer)-4
 }
 
-func CaptureMySQLMessage(requestBuffer []byte, clientConn, destConn net.Conn, logger *zap.Logger) []*models.Mock {
+func ReadFirstBuffer(clientConn, destConn net.Conn) ([]byte, string, error) {
 
-	// After sending the handshake response
-	responseBuffer, err := util.ReadBytes(destConn)
-	if err != nil {
-		logger.Error("failed to read reply from the mysql server", zap.Error(err), zap.String("mysql server address", destConn.RemoteAddr().String()))
-		return nil
+	// Attempt to read from destConn first
+	n, err := util.ReadBytes(destConn)
+
+	// If there is data from destConn, return it
+	if err == nil {
+		return n, "destination", nil
 	}
 
-	fmt.Println("This is the response buffer:", string(responseBuffer), responseBuffer)
-	_, err = clientConn.Write(responseBuffer)
+	// If the error is a timeout, try to read from clientConn
+	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		n, err = util.ReadBytes(clientConn)
 
-	opr, _, packet, err := DecodeMySQLPacket(responseBuffer)
-	if err != nil {
-		logger.Error("failed to decode the mysql packet from the server", zap.Error(err))
-		return nil
+		// If there is data from clientConn, return it
+		if err == nil {
+			return n, "client", nil
+		}
+
+		// Return any error from reading clientConn
+		return nil, "", err
 	}
 
-	if opr == "MySQLOK" {
-		okPacket := packet.(*OKPacket)
-		logger.Info("Received OKPacket", zap.Any("okPacket", okPacket))
+	// Return any other error from reading destConn
+	return nil, "", err
+}
 
-	} else if opr == "MySQLErr" {
-		errPacket := packet.(*ERRPacket)
-		logger.Error("Received ERRPacket", zap.Any("errPacket", errPacket))
-		return nil
-
-	} else {
-		logger.Error("Unexpected packet from server", zap.String("operation", opr))
-		return nil
-	}
-
+func handleClientQueries(initialBuffer []byte, clientConn, destConn net.Conn, logger *zap.Logger) ([]*models.Mock, error) {
 	deps := []*models.Mock{}
+	firstIteration := true
 
-	opr, requestHeader, mysqlRequest, err := DecodeMySQLPacket(requestBuffer)
-	if err != nil {
-		logger.Error("failed to decode the mysql packet from the client", zap.Error(err))
-		// return nil
+	for {
+		var queryBuffer []byte
+		var err error
+
+		if firstIteration && initialBuffer != nil {
+			queryBuffer = initialBuffer
+			firstIteration = false
+		} else {
+			queryBuffer, err = util.ReadBytes(clientConn)
+			if err != nil {
+				logger.Error("failed to read query from the mysql client", zap.Error(err))
+				return nil, err
+			}
+		}
+
+		// Break the loop when the client stops sending data
+		if len(queryBuffer) == 0 {
+			break
+		}
+
+		fmt.Println("the query for mysql: ", queryBuffer)
+
+		_, err = destConn.Write(queryBuffer)
+		if err != nil {
+			logger.Error("failed to write query to mysql server", zap.Error(err))
+			return nil, err
+		}
+
+		// Reading the query response
+		queryResponse, err := util.ReadBytes(destConn)
+		if err != nil {
+			logger.Error("failed to read query response from mysql server", zap.Error(err))
+			return nil, err
+		}
+
+		// Sending the query response back to the client
+		_, err = clientConn.Write(queryResponse)
+		if err != nil {
+			logger.Error("failed to write query response to mysql client", zap.Error(err))
+			return nil, err
+		}
+
+		opr, requestHeader, mysqlRequest, err := DecodeMySQLPacket(queryBuffer, logger)
+		if err != nil {
+			logger.Error("Failed to decode the MySQL packet from the client", zap.Error(err))
+			continue
+		}
+
+		opr, responseHeader, mysqlResp, err := DecodeMySQLPacket(queryResponse, logger)
+		if err != nil {
+			logger.Error("Failed to decode the MySQL packet from the destination server", zap.Error(err))
+			continue
+		}
+
+		meta := map[string]string{
+			"operation": opr,
+		}
+		mysqlMock := &models.Mock{
+			Version: models.V1Beta2,
+			Kind:    models.SQL,
+			Name:    "",
+		}
+		mysqlSpec := &spec.MySQLSpec{
+			Metadata: meta,
+			RequestHeader: spec.MySQLPacketHeader{
+				PacketLength: requestHeader.PayloadLength,
+				PacketNumber: requestHeader.SequenceID,
+			},
+			ResponseHeader: spec.MySQLPacketHeader{
+				PacketLength: responseHeader.PayloadLength,
+				PacketNumber: responseHeader.SequenceID,
+			},
+		}
+		err = mysqlSpec.Request.Encode(mysqlRequest)
+		if err != nil {
+			logger.Error("Failed to encode the request MySQL packet into YAML doc", zap.Error(err))
+			continue
+		}
+		err = mysqlSpec.Response.Encode(mysqlResp)
+		if err != nil {
+			logger.Error("Failed to encode the response MySQL packet into YAML doc", zap.Error(err))
+			continue
+		}
+		mysqlMock.Spec.Encode(mysqlSpec)
+		deps = append(deps, mysqlMock)
 	}
+	return deps, nil
+}
 
-	opr, responseHeader, mysqlResp, err := DecodeMySQLPacket(responseBuffer)
+func CaptureMySQLMessage(requestBuffer []byte, clientConn, destConn net.Conn, logger *zap.Logger) []*models.Mock {
+	var deps []*models.Mock
+
+	data, source, err := ReadFirstBuffer(clientConn, destConn)
 	if err != nil {
-		logger.Error("failed to decode the mysql packet from the destination server", zap.Error(err))
+		logger.Error("failed to read initial data", zap.Error(err))
 		return nil
 	}
 
-	meta := map[string]string{
-		"operation": opr,
+	if source == "destination" {
+
+		// After sending the handshake response
+		handshakeResponseBuffer := data
+
+		_, err = clientConn.Write(handshakeResponseBuffer)
+
+		if err != nil {
+			logger.Error("failed to write handshake request to client", zap.Error(err))
+			return nil
+		}
+		handshakeResponseFromClient, err := util.ReadBytes(clientConn)
+		if err != nil {
+			logger.Error("failed to read handshake respnse from client", zap.Error(err))
+			return nil
+		}
+
+		n, err := destConn.Write(handshakeResponseFromClient)
+		if err != nil {
+			logger.Error("failed to write handshake respnse to server", zap.Error(err))
+			return nil
+		}
+		fmt.Println("number of bytes writen to server Conn", n)
+		time.Sleep(100 * time.Millisecond)
+
+		okPacket1, err := util.ReadBytes(destConn)
+		if err != nil {
+			logger.Error("failed to read packet from server after handshake", zap.Error(err))
+			return nil
+		}
+		fmt.Println("the packet from mysql server after handshake", (okPacket1))
+		_, err = clientConn.Write(okPacket1)
+
+		if err != nil {
+			logger.Error("failed to write the packet to mysql client", zap.Error(err))
+			return nil
+		}
+		//handshake complete
+
+		// After completing the handshake process, handle the client queries
+		deps, err = handleClientQueries(nil, clientConn, destConn, logger)
+		if err != nil {
+			logger.Error("failed to handle client queries", zap.Error(err))
+			return nil
+		}
+	} else if source == "client" {
+		// queryBuffer := data
+		deps, err = handleClientQueries(data, clientConn, destConn, logger)
+		if err != nil {
+			logger.Error("failed to handle client queries", zap.Error(err))
+			return nil
+		}
 	}
-	mysqlMock := &models.Mock{
-		Version: models.V1Beta2,
-		Kind:    models.SQL,
-		Name:    "",
-	}
-	mysqlSpec := &spec.MySQLSpec{
-		Metadata: meta,
-		RequestHeader: spec.MySQLPacketHeader{
-			PacketLength: requestHeader.PayloadLength,
-			PacketNumber: requestHeader.SequenceID,
-		},
-		ResponseHeader: spec.MySQLPacketHeader{
-			PacketLength: responseHeader.PayloadLength,
-			PacketNumber: responseHeader.SequenceID,
-		},
-	}
-	err = mysqlSpec.Request.Encode(mysqlRequest)
-	if err != nil {
-		logger.Error("failed to encode the request mysql packet into yaml doc", zap.Error(err))
-		return nil
-	}
-	err = mysqlSpec.Response.Encode(mysqlResp)
-	if err != nil {
-		logger.Error("failed to encode the response mysql packet into yaml doc", zap.Error(err))
-		return nil
-	}
-	mysqlMock.Spec.Encode(mysqlSpec)
-	deps = append(deps, mysqlMock)
 
 	return deps
 }

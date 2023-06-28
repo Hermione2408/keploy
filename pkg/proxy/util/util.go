@@ -24,7 +24,7 @@ func ToIPAddressStr(ip uint32) string {
 	return fmt.Sprintf("%d.%d.%d.%d", fourthByte, thirdByte, secondByte, firstByte)
 }
 
-// ReadBytes function is utilized to read the complete message from the reader until the end of the file (EOF). 
+// ReadBytes function is utilized to read the complete message from the reader until the end of the file (EOF).
 // It returns the content as a byte array.
 func ReadBytes(reader io.Reader) ([]byte, error) {
 	var buffer []byte
@@ -33,13 +33,12 @@ func ReadBytes(reader io.Reader) ([]byte, error) {
 		// Create a temporary buffer to hold the incoming bytes
 		buf := make([]byte, 1024)
 		rand.Seed(time.Now().UnixNano())
-		
+
 		// Read bytes from the Reader
 		n, err := reader.Read(buf)
 		if err != nil && err != io.EOF {
 			return nil, err
 		}
-		fmt.Println("number of bytes read in util: ", n)
 		// Append the bytes to the buffer
 		buffer = append(buffer, buf[:n]...)
 

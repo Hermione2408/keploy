@@ -4,7 +4,11 @@ import (
 	"bytes"
 	"crypto/sha1"
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"strings"
+
+	"go.uber.org/zap"
 )
 
 type MySQLPacketHeader struct {
@@ -100,6 +104,23 @@ type HandshakeResponse41 struct {
 	Database          string
 	AuthPluginName    string
 	ConnectAttributes map[string]string
+}
+type PacketType2 struct {
+	Field1 byte
+	Field2 byte
+	Field3 byte
+}
+
+func decodePacketType2(data []byte) (*PacketType2, error) {
+	if len(data) < 3 {
+		return nil, fmt.Errorf("PacketType2 too short")
+	}
+
+	return &PacketType2{
+		Field1: data[0],
+		Field2: data[1],
+		Field3: data[2],
+	}, nil
 }
 
 func NewHandshakeResponsePacket(handshake *HandshakeV10Packet, authMethod string, password string) *HandshakeResponse41 {
@@ -198,7 +219,7 @@ func (p *SSLRequestPacket) Encode() ([]byte, error) {
 
 	return buffer.Bytes(), nil
 }
-func DecodeMySQLPacket(data []byte) (string, MySQLPacketHeader, interface{}, error) {
+func DecodeMySQLPacket(data []byte, logger *zap.Logger) (string, MySQLPacketHeader, interface{}, error) {
 	header, err := decodeMySQLPacketHeader(data)
 	if err != nil {
 		return "", MySQLPacketHeader{}, nil, err
@@ -222,8 +243,32 @@ func DecodeMySQLPacket(data []byte) (string, MySQLPacketHeader, interface{}, err
 	case data[0] == 0xFF:
 		packetType = "MySQLErr"
 		packet, err = decodeMySQLErr(data)
+	case data[0] == 0xFE: // EOF packet
+		packetType = "MySQLEOF"
+		packet, err = decodeMYSQLEOF(data)
+	case data[0] == 0x02: // New packet type
+		packetType = "MySQLOK"
+		packet, err = decodePacketType2(data)
+	case data[0] == 0x0e: // COM_PING
+		packetType = "COM_PING"
+		packet, err = decodeComPing(data)
+	case data[0] == 0x17: // COM_STMT_EXECUTE
+		packetType = "COM_STMT_EXECUTE"
+		packet, err = decodeComStmtExecute(data)
+	case data[0] == 0x16: // COM_STMT_FETCH
+		packetType = "COM_STMT_FETCH"
+		packet, err = decodeComStmtFetch(data)
+	case data[0] == 0x11: // COM_CHANGE_USER
+		packetType = "COM_CHANGE_USER"
+		packet, err = decodeComChangeUser(data)
+	case data[0] == 0x04: // COM_STATISTICS
+		packetType = "COM_STATISTICS"
+		packet = nil
+		err = nil
 	default:
-		err = fmt.Errorf("unknown packet type: %v", data[0])
+		packetType = "Unknown"
+		packet = data
+		logger.Warn("unknown packet type", zap.Int("unknownPacketTypeInt", int(data[0])))
 	}
 
 	if err != nil {
@@ -433,4 +478,120 @@ func (p *MySQLPacket) Encode() ([]byte, error) {
 	copy(packet[4:], p.Payload)
 
 	return packet, nil
+}
+
+type ComStmtFetchPacket struct {
+	StatementID uint32
+	RowCount    uint32
+}
+
+func decodeComStmtFetch(data []byte) (ComStmtFetchPacket, error) {
+	if len(data) < 9 {
+		return ComStmtFetchPacket{}, errors.New("Data too short for COM_STMT_FETCH")
+	}
+
+	statementID := binary.LittleEndian.Uint32(data[1:5])
+	rowCount := binary.LittleEndian.Uint32(data[5:9])
+
+	return ComStmtFetchPacket{
+		StatementID: statementID,
+		RowCount:    rowCount,
+	}, nil
+}
+
+type ComStmtExecute struct {
+	StatementID    uint32
+	Flags          byte
+	IterationCount uint32
+	NullBitmap     []byte
+	ParamCount     uint16
+	Parameters     []BoundParameter
+}
+
+type BoundParameter struct {
+	Type     byte
+	Unsigned byte
+	Value    []byte
+}
+
+func decodeComStmtExecute(packet []byte) (ComStmtExecute, error) {
+	// removed the print statement for cleanliness
+	if len(packet) < 14 { // the minimal size of the packet without parameters should be 14, not 13
+		return ComStmtExecute{}, fmt.Errorf("packet length less than 14 bytes")
+	}
+
+	stmtExecute := ComStmtExecute{}
+	stmtExecute.StatementID = binary.LittleEndian.Uint32(packet[1:5])
+	stmtExecute.Flags = packet[5]
+	stmtExecute.IterationCount = binary.LittleEndian.Uint32(packet[6:10])
+
+	// the next bytes are reserved for the Null-Bitmap, Parameter Bound Flag and Bound Parameters if they exist
+	// if the length of the packet is greater than 14, then there are parameters
+	if len(packet) > 14 {
+		nullBitmapLength := int((stmtExecute.ParamCount + 7) / 8)
+
+		stmtExecute.NullBitmap = packet[10 : 10+nullBitmapLength]
+		stmtExecute.ParamCount = binary.LittleEndian.Uint16(packet[10+nullBitmapLength:])
+
+		// in case new parameters are bound, the new types and values are sent
+		if packet[10+nullBitmapLength] == 1 {
+			// read the types and values of the new parameters
+			stmtExecute.Parameters = make([]BoundParameter, stmtExecute.ParamCount)
+			for i := 0; i < int(stmtExecute.ParamCount); i++ {
+				index := 10 + nullBitmapLength + 1 + 2*i
+				if index+1 >= len(packet) {
+					return ComStmtExecute{}, fmt.Errorf("packet length less than expected while reading parameters")
+				}
+				stmtExecute.Parameters[i].Type = packet[index]
+				stmtExecute.Parameters[i].Unsigned = packet[index+1]
+			}
+		}
+	}
+
+	return stmtExecute, nil
+}
+
+type ComChangeUserPacket struct {
+	User         string
+	Auth         []byte
+	Db           string
+	CharacterSet uint8
+	AuthPlugin   string
+}
+
+func decodeComChangeUser(data []byte) (ComChangeUserPacket, error) {
+	if len(data) < 2 {
+		return ComChangeUserPacket{}, errors.New("Data too short for COM_CHANGE_USER")
+	}
+
+	nullTerminatedStrings := strings.Split(string(data[1:]), "\x00")
+	if len(nullTerminatedStrings) < 5 {
+		return ComChangeUserPacket{}, errors.New("Data malformed for COM_CHANGE_USER")
+	}
+
+	user := nullTerminatedStrings[0]
+	authLength := data[len(user)+2]
+	auth := data[len(user)+3 : len(user)+3+int(authLength)]
+	db := nullTerminatedStrings[2]
+	characterSet := data[len(user)+4+int(authLength)]
+	authPlugin := nullTerminatedStrings[3]
+
+	return ComChangeUserPacket{
+		User:         user,
+		Auth:         auth,
+		Db:           db,
+		CharacterSet: characterSet,
+		AuthPlugin:   authPlugin,
+	}, nil
+}
+
+type ComPingPacket struct {
+}
+
+func decodeComPing(data []byte) (ComPingPacket, error) {
+	if len(data) < 1 || data[0] != 0x0e {
+		return ComPingPacket{}, errors.New("Data malformed for COM_PING")
+	}
+
+	return ComPingPacket{}, nil
 }
