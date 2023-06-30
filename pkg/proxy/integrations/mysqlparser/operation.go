@@ -226,11 +226,27 @@ func DecodeMySQLPacket(data []byte, logger *zap.Logger) (string, MySQLPacketHead
 	}
 
 	data = data[4:]
-
+	fmt.Print(data, "data to decode")
 	var packet interface{}
 	var packetType string
 
 	switch {
+	case data[0] == 0x0e: // COM_PING
+		packetType = "COM_PING"
+		packet, err = decodeComPing(data)
+	case data[0] == 0x17: // COM_STMT_EXECUTE
+		packetType = "COM_STMT_EXECUTE"
+		packet, err = decodeComStmtExecute(data)
+	case data[0] == 0x16: // COM_STMT_FETCH
+		packetType = "COM_STMT_FETCH"
+		packet, err = decodeComStmtFetch(data)
+	case data[0] == 0x11: // COM_CHANGE_USER
+		packetType = "COM_CHANGE_USER"
+		packet, err = decodeComChangeUser(data)
+	case data[0] == 0x04: // COM_STATISTICS
+		packetType = "COM_STATISTICS"
+		packet = nil
+		err = nil
 	case data[0] == 0x0A:
 		packetType = "MySQLHandshakeV10"
 		packet, err = decodeMySQLHandshakeV10(data)
@@ -249,22 +265,9 @@ func DecodeMySQLPacket(data []byte, logger *zap.Logger) (string, MySQLPacketHead
 	case data[0] == 0x02: // New packet type
 		packetType = "MySQLOK"
 		packet, err = decodePacketType2(data)
-	case data[0] == 0x0e: // COM_PING
-		packetType = "COM_PING"
-		packet, err = decodeComPing(data)
-	case data[0] == 0x17: // COM_STMT_EXECUTE
-		packetType = "COM_STMT_EXECUTE"
-		packet, err = decodeComStmtExecute(data)
-	case data[0] == 0x16: // COM_STMT_FETCH
-		packetType = "COM_STMT_FETCH"
-		packet, err = decodeComStmtFetch(data)
-	case data[0] == 0x11: // COM_CHANGE_USER
-		packetType = "COM_CHANGE_USER"
-		packet, err = decodeComChangeUser(data)
-	case data[0] == 0x04: // COM_STATISTICS
-		packetType = "COM_STATISTICS"
+	case data[0] == 0x19: // New case for packet type 25
+		packetType = "Control/Ping_Packet"
 		packet = nil
-		err = nil
 	default:
 		packetType = "Unknown"
 		packet = data

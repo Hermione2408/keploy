@@ -1,6 +1,7 @@
 package mysqlparser
 
 import (
+	"encoding/binary"
 	"fmt"
 	"net"
 	"time"
@@ -46,6 +47,26 @@ func ReadFirstBuffer(clientConn, destConn net.Conn) ([]byte, string, error) {
 	return nil, "", err
 }
 
+func readLengthEncodedString(data []byte) (result string, isNull bool, n int) {
+	// Check first byte
+	switch data[0] {
+	case 0xfb: // MySQL NULL value
+		return "", true, 1
+	case 0xfc: // Encoded in the next 2 bytes
+		length := int(binary.LittleEndian.Uint16(data[1:3]))
+		return string(data[3 : 3+length]), false, 3 + length
+	case 0xfd: // Encoded in the next 3 bytes
+		length := int(binary.LittleEndian.Uint32(append(data[1:4], 0)))
+		return string(data[4 : 4+length]), false, 4 + length
+	case 0xfe: // Encoded in the next 8 bytes
+		length := int(binary.LittleEndian.Uint64(data[1:9]))
+		return string(data[9 : 9+length]), false, 9 + length
+	default: // Encoded in the first byte
+		length := int(data[0])
+		return string(data[1 : 1+length]), false, 1 + length
+	}
+}
+
 func handleClientQueries(initialBuffer []byte, clientConn, destConn net.Conn, logger *zap.Logger) ([]*models.Mock, error) {
 	deps := []*models.Mock{}
 	firstIteration := true
@@ -72,12 +93,14 @@ func handleClientQueries(initialBuffer []byte, clientConn, destConn net.Conn, lo
 
 		fmt.Println("the query for mysql: ", queryBuffer)
 
-		_, err = destConn.Write(queryBuffer)
+		res, err := destConn.Write(queryBuffer)
 		if err != nil {
 			logger.Error("failed to write query to mysql server", zap.Error(err))
 			return nil, err
 		}
-
+		if res == 9 {
+			break
+		}
 		// Reading the query response
 		queryResponse, err := util.ReadBytes(destConn)
 		if err != nil {
