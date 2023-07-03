@@ -3,10 +3,16 @@ package mysqlparser
 import (
 	"bytes"
 	"crypto/sha1"
+	"database/sql/driver"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"math"
+	"net"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -30,14 +36,6 @@ type HandshakeV10Packet struct {
 type QueryPacket struct {
 	Command byte
 	Query   string
-}
-
-type OKPacket struct {
-	AffectedRows uint64
-	LastInsertID uint64
-	StatusFlags  uint16
-	Warnings     uint16
-	Info         string
 }
 
 type EOFPacket struct {
@@ -194,83 +192,77 @@ func NewSSLRequestPacket(capabilities uint32, maxPacketSize uint32, characterSet
 	}
 }
 
-func (p *SSLRequestPacket) Encode() ([]byte, error) {
-	buffer := new(bytes.Buffer)
+func (p *MySQLPacket) Encode() ([]byte, error) {
+	packet := make([]byte, 4)
 
-	err := binary.Write(buffer, binary.LittleEndian, p.Capabilities)
-	if err != nil {
-		return nil, err
+	binary.LittleEndian.PutUint32(packet[:3], p.Header.PayloadLength)
+	packet[3] = p.Header.SequenceID
+
+	// Simplistic interpretation of MySQL's COM_QUERY
+	if p.Payload[0] == 0x03 {
+		query := string(p.Payload[1:])
+		queryObj := map[string]interface{}{
+			"command": "COM_QUERY",
+			"query":   query,
+		}
+		queryJson, _ := json.Marshal(queryObj)
+		packet = append(packet, queryJson...)
 	}
 
-	err = binary.Write(buffer, binary.LittleEndian, p.MaxPacketSize)
-	if err != nil {
-		return nil, err
-	}
-
-	err = binary.Write(buffer, binary.LittleEndian, p.CharacterSet)
-	if err != nil {
-		return nil, err
-	}
-
-	_, err = buffer.Write(p.Reserved[:])
-	if err != nil {
-		return nil, err
-	}
-
-	return buffer.Bytes(), nil
+	return packet, nil
 }
-func DecodeMySQLPacket(data []byte, logger *zap.Logger) (string, MySQLPacketHeader, interface{}, error) {
-	header, err := decodeMySQLPacketHeader(data)
-	if err != nil {
-		return "", MySQLPacketHeader{}, nil, err
-	}
 
-	data = data[4:]
-	fmt.Print(data, "data to decode")
-	var packet interface{}
+func DecodeMySQLPacket(packet MySQLPacket, logger *zap.Logger, destConn net.Conn) (string, MySQLPacketHeader, interface{}, error) {
+	data := packet.Payload
+
+	// Directly use the header from the packet
+	header := packet.Header
+
+	var packetData interface{}
 	var packetType string
+	var err error
 
 	switch {
 	case data[0] == 0x0e: // COM_PING
 		packetType = "COM_PING"
-		packet, err = decodeComPing(data)
+		packetData, err = decodeComPing(data)
 	case data[0] == 0x17: // COM_STMT_EXECUTE
 		packetType = "COM_STMT_EXECUTE"
-		packet, err = decodeComStmtExecute(data)
+		packetData, err = decodeComStmtExecute(data)
 	case data[0] == 0x16: // COM_STMT_FETCH
 		packetType = "COM_STMT_FETCH"
-		packet, err = decodeComStmtFetch(data)
+		packetData, err = decodeComStmtFetch(data)
 	case data[0] == 0x11: // COM_CHANGE_USER
 		packetType = "COM_CHANGE_USER"
-		packet, err = decodeComChangeUser(data)
-	case data[0] == 0x04: // COM_STATISTICS
-		packetType = "COM_STATISTICS"
-		packet = nil
-		err = nil
+		packetData, err = decodeComChangeUser(data)
+	case data[0] == 0x04: // Result Set Packet (First byte 0x04 may indicate a length-encoded integer, which is common in result set packets)
+		fmt.Print("\n Result Set Packet \n", data)
+		packetType = "Result Set Packet"
+		packetData, err = DecodeResultSet(data, destConn)
 	case data[0] == 0x0A:
 		packetType = "MySQLHandshakeV10"
-		packet, err = decodeMySQLHandshakeV10(data)
+		packetData, err = decodeMySQLHandshakeV10(data)
 	case data[0] == 0x03:
 		packetType = "MySQLQuery"
-		packet, err = decodeMySQLQuery(data)
+		packetData, err = decodeMySQLQuery(data)
 	case data[0] == 0x00:
 		packetType = "MySQLOK"
-		packet, err = decodeMySQLOK(data)
+		packetData, err = decodeMySQLOK(data)
 	case data[0] == 0xFF:
 		packetType = "MySQLErr"
-		packet, err = decodeMySQLErr(data)
+		packetData, err = decodeMySQLErr(data)
 	case data[0] == 0xFE: // EOF packet
 		packetType = "MySQLEOF"
-		packet, err = decodeMYSQLEOF(data)
+		packetData, err = decodeMYSQLEOF(data)
 	case data[0] == 0x02: // New packet type
 		packetType = "MySQLOK"
-		packet, err = decodePacketType2(data)
+		packetData, err = decodePacketType2(data)
 	case data[0] == 0x19: // New case for packet type 25
 		packetType = "Control/Ping_Packet"
-		packet = nil
+		packetData = nil
 	default:
 		packetType = "Unknown"
-		packet = data
+		packetData = data
 		logger.Warn("unknown packet type", zap.Int("unknownPacketTypeInt", int(data[0])))
 	}
 
@@ -278,7 +270,636 @@ func DecodeMySQLPacket(data []byte, logger *zap.Logger) (string, MySQLPacketHead
 		return "", MySQLPacketHeader{}, nil, err
 	}
 
-	return packetType, header, packet, nil
+	return packetType, header, packetData, nil
+}
+
+type RowDataPacket struct {
+	Data []byte
+}
+
+func readLengthEncodedInteger(b []byte) (uint64, bool, int) {
+	if len(b) == 0 {
+		return 0, true, 1
+	}
+	switch b[0] {
+	case 0xfb:
+		return 0, true, 1
+	case 0xfc:
+		return uint64(b[1]) | uint64(b[2])<<8, false, 3
+	case 0xfd:
+		return uint64(b[1]) | uint64(b[2])<<8 | uint64(b[3])<<16, false, 4
+	case 0xfe:
+		return uint64(b[1]) | uint64(b[2])<<8 | uint64(b[3])<<16 |
+				uint64(b[4])<<24 | uint64(b[5])<<32 | uint64(b[6])<<40 |
+				uint64(b[7])<<48 | uint64(b[8])<<56,
+			false, 9
+	default:
+		return uint64(b[0]), false, 1
+	}
+}
+
+func readLengthEncodedStringUpdated(data []byte) (string, []byte, error) {
+	// First, determine the length of the string
+	strLength, isNull, bytesRead := readLengthEncodedInteger(data)
+	if isNull {
+		return "", nil, errors.New("NULL value encountered")
+	}
+
+	// Adjust data to point to the next bytes after the integer
+	data = data[bytesRead:]
+
+	// Check if we have enough data left to read the string
+	if len(data) < int(strLength) {
+		return "", nil, errors.New("not enough data to read string")
+	}
+
+	// Read the string
+	strData := data[:strLength]
+	remainingData := data[strLength:]
+
+	// Convert the byte array to a string
+	str := string(strData)
+
+	return str, remainingData, nil
+}
+
+func decodeRowData(data []byte, columns []ColumnDefinition) ([]RowDataPacket, []byte, error) {
+	var rowPackets []RowDataPacket
+	for _, _ = range columns {
+		var rowData RowDataPacket
+		var err error
+
+		// Check for NULL column
+		if data[0] == 0xfb {
+			data = data[1:]
+			rowData.Data = nil
+			rowPackets = append(rowPackets, rowData)
+			continue
+		}
+
+		var fieldStr string
+		fieldStr, data, err = readLengthEncodedStringUpdated(data)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		rowData.Data = []byte(fieldStr)
+		rowPackets = append(rowPackets, rowData)
+	}
+
+	return rowPackets, data, nil
+}
+
+// func decodeColumnDefinition(data []byte) (*ColumnDefinition, []byte, error) {
+// 	columnDef := &ColumnDefinition{}
+// 	var err error
+
+// 	// Parse each field from the column definition packet
+// 	columnDef.catalog, data, err = readLengthEncodedStringUpdated(data)
+// 	if err != nil {
+// 		return nil, data, err
+// 	}
+
+// 	columnDef.schema, data, err = readLengthEncodedStringUpdated(data)
+// 	if err != nil {
+// 		return nil, data, err
+// 	}
+
+// 	columnDef.table, data, err = readLengthEncodedStringUpdated(data)
+// 	if err != nil {
+// 		return nil, data, err
+// 	}
+
+// 	columnDef.orgTable, data, err = readLengthEncodedStringUpdated(data)
+// 	if err != nil {
+// 		return nil, data, err
+// 	}
+
+// 	columnDef.name, data, err = readLengthEncodedStringUpdated(data)
+// 	if err != nil {
+// 		return nil, data, err
+// 	}
+
+// 	columnDef.orgName, data, err = readLengthEncodedStringUpdated(data)
+// 	if err != nil {
+// 		return nil, data, err
+// 	}
+
+// 	// Skip the next length value
+// 	if len(data) < 1 {
+// 		return nil, data, errors.New("data too short")
+// 	}
+// 	data = data[1:]
+
+// 	columnDef.characterSet = binary.LittleEndian.Uint16(data[0:2])
+// 	data = data[2:]
+
+// 	columnDef.columnLength = binary.LittleEndian.Uint32(data[0:4])
+// 	data = data[4:]
+
+// 	columnDef.columnType = data[0]
+// 	data = data[1:]
+
+// 	columnDef.flags = binary.LittleEndian.Uint16(data[0:2])
+// 	data = data[2:]
+
+// 	columnDef.decimals = data[0]
+// 	data = data[1:]
+
+// 	// Skip filler
+// 	data = data[2:]
+
+// 	return columnDef, data, nil
+// }
+
+type OKPacket struct {
+	AffectedRows uint64
+	LastInsertID uint64
+	StatusFlags  uint16
+	Warnings     uint16
+	Info         string
+}
+type ResultSet struct {
+	ColumnCount       int
+	ColumnDefinitions []ColumnDefinition
+	Rows              [][]string
+}
+
+func decodeOKPacket(data []byte) (OKPacket, []byte, error) {
+	var okPacket OKPacket
+	if data[0] != 0xfe {
+		return okPacket, data, errors.New("invalid OK packet")
+	}
+
+	// 0xfe is followed by affectedRows and lastInsertID
+	var bytesRead int
+	okPacket.AffectedRows, _, bytesRead = readLengthEncodedInteger(data[1:])
+	data = data[bytesRead+1:]
+
+	okPacket.LastInsertID, _, bytesRead = readLengthEncodedInteger(data)
+	data = data[bytesRead:]
+
+	if len(data) < 4 {
+		return okPacket, data, errors.New("invalid OK packet")
+	}
+
+	// Then statusFlags and warnings
+	okPacket.StatusFlags = binary.LittleEndian.Uint16(data)
+	okPacket.Warnings = binary.LittleEndian.Uint16(data[2:])
+
+	data = data[4:]
+
+	// If more data, it's info message
+	if len(data) > 0 {
+		okPacket.Info, data, _ = readLengthEncodedStringUpdated(data)
+	}
+
+	return okPacket, data, nil
+}
+
+const (
+	HeaderSize         = 1024
+	OKPacketResulSet   = 0x00
+	EOFPacketResultSet = 0xfe
+	LengthEncodedInt   = 0xfb
+)
+
+// ColumnValue represents a value from a column in a result set
+type ColumnValue struct {
+	Null  bool
+	Value string
+}
+
+type ColumnDefinition struct {
+	Catalog      string
+	Schema       string
+	Table        string
+	OrgTable     string
+	Name         string
+	OrgName      string
+	Charset      uint16
+	ColumnLength uint32
+	Type         byte
+	Flags        uint16
+	Decimals     byte
+}
+type binaryRows struct {
+	pd      *packetDecoder
+	columns []mysqlField
+}
+
+func (pd *packetDecoder) readResultSetHeaderPacket() (int, error) {
+	data, err := pd.readPacket()
+	if err == nil {
+		switch data[0] {
+
+		case iOK:
+			return 0, pd.handleOkPacket(data)
+
+		case iERR:
+			return 0, pd.handleErrorPacket(data)
+
+		case iLocalInFile:
+			return 0, pd.handleInFileRequest(string(data[1:]))
+		}
+
+		// column count
+		num, _, n := readLengthEncodedInteger(data)
+		if n-len(data) == 0 {
+			return int(num), nil
+		}
+
+		return 0, ErrMalformPkt
+	}
+	return 0, err
+}
+func (pd *packetDecoder) readColumns(count int) ([]mysqlField, error) {
+	columns := make([]mysqlField, count)
+
+	for i := 0; ; i++ {
+		data, err := pd.readPacket()
+		if err != nil {
+			return nil, err
+		}
+
+		// EOF Packet
+		if data[0] == iEOF && (len(data) == 5 || len(data) == 1) {
+			if i == count {
+				return columns, nil
+			}
+			return nil, fmt.Errorf("column count mismatch n:%d len:%d", count, len(columns))
+		}
+
+		// Catalog
+		pos, err := skipLengthEncodedString(data)
+		if err != nil {
+			return nil, err
+		}
+
+		// Database [len coded string]
+		n, err := skipLengthEncodedString(data[pos:])
+		if err != nil {
+			return nil, err
+		}
+		pos += n
+
+		// Table [len coded string]
+		tableName, _, n, err := readLengthEncodedString(data[pos:])
+		if err != nil {
+			return nil, err
+		}
+		pos += n
+		columns[i].tableName = string(tableName)
+
+		// Original table [len coded string]
+		n, err = skipLengthEncodedString(data[pos:])
+		if err != nil {
+			return nil, err
+		}
+		pos += n
+
+		// Name [len coded string]
+		name, _, n, err := readLengthEncodedString(data[pos:])
+		if err != nil {
+			return nil, err
+		}
+		columns[i].name = string(name)
+		pos += n
+
+		// Original name [len coded string]
+		n, err = skipLengthEncodedString(data[pos:])
+		if err != nil {
+			return nil, err
+		}
+		pos += n
+
+		// Filler [uint8]
+		pos++
+
+		// Charset [charset, collation uint8]
+		columns[i].charSet = data[pos]
+		pos += 2
+
+		// Length [uint32]
+		columns[i].length = binary.LittleEndian.Uint32(data[pos : pos+4])
+		pos += 4
+
+		// Field type [uint8]
+		columns[i].fieldType = fieldType(data[pos])
+		pos++
+
+		// Flags [uint16]
+		columns[i].flags = fieldFlag(binary.LittleEndian.Uint16(data[pos : pos+2]))
+		pos += 2
+
+		// Decimals [uint8]
+		columns[i].decimals = data[pos]
+	}
+}
+
+func (rows *binaryRows) readRow(dest []driver.Value) error {
+	data, err := rows.pd.readPacket()
+	if err != nil {
+		return err
+	}
+
+	// packet indicator [1 byte]
+	if data[0] != iOK {
+		// EOF Packet
+		if data[0] == iEOF && len(data) == 5 {
+			rows.mc.status = readStatus(data[3:])
+			rows.rs.done = true
+			if !rows.HasNextResultSet() {
+				rows.mc = nil
+			}
+			return io.EOF
+		}
+		mc := rows.mc
+		rows.mc = nil
+
+		// Error otherwise
+		return mc.handleErrorPacket(data)
+	}
+
+	// NULL-bitmap,  [(column-count + 7 + 2) / 8 bytes]
+	pos := 1 + (len(dest)+7+2)>>3
+	nullMask := data[1:pos]
+
+	for i := range dest {
+		// Field is NULL
+		// (byte >> bit-pos) % 2 == 1
+		if ((nullMask[(i+2)>>3] >> uint((i+2)&7)) & 1) == 1 {
+			dest[i] = nil
+			continue
+		}
+
+		// Convert to byte-coded string
+		switch rows.rs.columns[i].fieldType {
+		case fieldTypeNULL:
+			dest[i] = nil
+			continue
+
+		// Numeric Types
+		case fieldTypeTiny:
+			if rows.rs.columns[i].flags&flagUnsigned != 0 {
+				dest[i] = int64(data[pos])
+			} else {
+				dest[i] = int64(int8(data[pos]))
+			}
+			pos++
+			continue
+
+		case fieldTypeShort, fieldTypeYear:
+			if rows.rs.columns[i].flags&flagUnsigned != 0 {
+				dest[i] = int64(binary.LittleEndian.Uint16(data[pos : pos+2]))
+			} else {
+				dest[i] = int64(int16(binary.LittleEndian.Uint16(data[pos : pos+2])))
+			}
+			pos += 2
+			continue
+
+		case fieldTypeInt24, fieldTypeLong:
+			if rows.rs.columns[i].flags&flagUnsigned != 0 {
+				dest[i] = int64(binary.LittleEndian.Uint32(data[pos : pos+4]))
+			} else {
+				dest[i] = int64(int32(binary.LittleEndian.Uint32(data[pos : pos+4])))
+			}
+			pos += 4
+			continue
+
+		case fieldTypeLongLong:
+			if rows.rs.columns[i].flags&flagUnsigned != 0 {
+				val := binary.LittleEndian.Uint64(data[pos : pos+8])
+				if val > math.MaxInt64 {
+					dest[i] = uint64ToString(val)
+				} else {
+					dest[i] = int64(val)
+				}
+			} else {
+				dest[i] = int64(binary.LittleEndian.Uint64(data[pos : pos+8]))
+			}
+			pos += 8
+			continue
+
+		case fieldTypeFloat:
+			dest[i] = math.Float32frombits(binary.LittleEndian.Uint32(data[pos : pos+4]))
+			pos += 4
+			continue
+
+		case fieldTypeDouble:
+			dest[i] = math.Float64frombits(binary.LittleEndian.Uint64(data[pos : pos+8]))
+			pos += 8
+			continue
+
+		// Length coded Binary Strings
+		case fieldTypeDecimal, fieldTypeNewDecimal, fieldTypeVarChar,
+			fieldTypeBit, fieldTypeEnum, fieldTypeSet, fieldTypeTinyBLOB,
+			fieldTypeMediumBLOB, fieldTypeLongBLOB, fieldTypeBLOB,
+			fieldTypeVarString, fieldTypeString, fieldTypeGeometry, fieldTypeJSON:
+			var isNull bool
+			var n int
+			dest[i], isNull, n, err = readLengthEncodedString(data[pos:])
+			pos += n
+			if err == nil {
+				if !isNull {
+					continue
+				} else {
+					dest[i] = nil
+					continue
+				}
+			}
+			return err
+
+		case
+			fieldTypeDate, fieldTypeNewDate, // Date YYYY-MM-DD
+			fieldTypeTime,                         // Time [-][H]HH:MM:SS[.fractal]
+			fieldTypeTimestamp, fieldTypeDateTime: // Timestamp YYYY-MM-DD HH:MM:SS[.fractal]
+
+			num, isNull, n := readLengthEncodedInteger(data[pos:])
+			pos += n
+
+			switch {
+			case isNull:
+				dest[i] = nil
+				continue
+			case rows.rs.columns[i].fieldType == fieldTypeTime:
+				// database/sql does not support an equivalent to TIME, return a string
+				var dstlen uint8
+				switch decimals := rows.rs.columns[i].decimals; decimals {
+				case 0x00, 0x1f:
+					dstlen = 8
+				case 1, 2, 3, 4, 5, 6:
+					dstlen = 8 + 1 + decimals
+				default:
+					return fmt.Errorf(
+						"protocol error, illegal decimals value %d",
+						rows.rs.columns[i].decimals,
+					)
+				}
+				dest[i], err = formatBinaryTime(data[pos:pos+int(num)], dstlen)
+			case rows.mc.parseTime:
+				dest[i], err = parseBinaryDateTime(num, data[pos:], rows.mc.cfg.Loc)
+			default:
+				var dstlen uint8
+				if rows.rs.columns[i].fieldType == fieldTypeDate {
+					dstlen = 10
+				} else {
+					switch decimals := rows.rs.columns[i].decimals; decimals {
+					case 0x00, 0x1f:
+						dstlen = 19
+					case 1, 2, 3, 4, 5, 6:
+						dstlen = 19 + 1 + decimals
+					default:
+						return fmt.Errorf(
+							"protocol error, illegal decimals value %d",
+							rows.rs.columns[i].decimals,
+						)
+					}
+				}
+				dest[i], err = formatBinaryDateTime(data[pos:pos+int(num)], dstlen)
+			}
+
+			if err == nil {
+				pos += int(num)
+				continue
+			} else {
+				return err
+			}
+
+		// Please report if this happens!
+		default:
+			return fmt.Errorf("unknown field type %d", rows.rs.columns[i].fieldType)
+		}
+	}
+
+	return nil
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+type packetDecoder struct {
+	net.Conn
+	// add other fields if needed
+}
+
+func (pd *packetDecoder) readPacket() ([]byte, error) {
+	// Implement your packet reading logic using pd.conn here
+	// This is just a placeholder
+	var buf [4]byte
+	if _, err := io.ReadFull(pd.conn, buf[:]); err != nil {
+		return nil, err
+	}
+	length := int(uint32(buf[0]) | uint32(buf[1])<<8 | uint32(buf[2])<<16)
+	data := make([]byte, length)
+	if _, err := io.ReadFull(pd.conn, data); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+func (pd *packetDecoder) DecodeResultSet(destConn net.Conn) ([][]driver.Value, error) {
+	pd = packetDecoder{Conn: destConn}
+
+	// Read ResultSetHeaderPacket
+	num, err := pd.readResultSetHeaderPacket()
+	if err != nil {
+		return nil, err
+	}
+
+	// Read columns
+	columns, err := pd.readColumns(num)
+	if err != nil {
+		return nil, err
+	}
+
+	var rows [][]driver.Value
+
+	// Keep reading rows until the EOF packet
+	for {
+		// Create a binaryRows object
+		br := &binaryRows{
+			mc:      pd,
+			columns: columns,
+		}
+		row := make([]driver.Value, len(columns))
+		err := br.readRow(row)
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, err
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
+}
+
+type byteConn struct {
+	buffer *bytes.Buffer
+}
+
+func (c *byteConn) Read(b []byte) (n int, err error) {
+	return c.buffer.Read(b)
+}
+
+func (c *byteConn) Write(b []byte) (n int, err error) {
+	return 0, nil
+}
+
+func (c *byteConn) Close() error {
+	return nil
+}
+
+func (c *byteConn) LocalAddr() net.Addr {
+	return nil
+}
+
+func (c *byteConn) RemoteAddr() net.Addr {
+	return nil
+}
+
+func (c *byteConn) SetDeadline(t time.Time) error {
+	return nil
+}
+
+func (c *byteConn) SetReadDeadline(t time.Time) error {
+	return nil
+}
+
+func (c *byteConn) SetWriteDeadline(t time.Time) error {
+	return nil
+}
+
+func newByteConn(data []byte) net.Conn {
+	return &byteConn{
+		buffer: bytes.NewBuffer(data),
+	}
+}
+
+func decodeComStatistics(data []byte) (string, error) {
+	if len(data) < 4 {
+		return "", errors.New("Data too short for COM_STATISTICS")
+	}
+
+	// Get the string length from the first 3 bytes (length-encoded)
+	strLen := int(binary.LittleEndian.Uint32(append(data[:3], 0)))
+	//fmt.Printf("Data: %d\n", data) // Debug output
+
+	//fmt.Printf("Decoded length: %d\n", strLen) // Debug output
+
+	if len(data) < 4+strLen {
+		return "", errors.New("Data too short for COM_STATISTICS")
+	}
+
+	// Extract the string data
+	statisticsData := data[4 : 4+strLen]
+
+	// Convert to string
+	statistics := string(statisticsData)
+
+	//fmt.Printf("Decoded string: '%s'\n", statistics) // Debug output
+
+	return statistics, nil
 }
 
 func decodeMySQLPacketHeader(data []byte) (MySQLPacketHeader, error) {
@@ -395,6 +1016,50 @@ func decodeLengthEncodedInteger(b []byte) (value uint64, isNull bool, n int, err
 		return 0, false, 0, fmt.Errorf("invalid length-encoded integer")
 	}
 }
+func Uint24(data []byte) uint32 {
+	return uint32(data[0]) | uint32(data[1])<<8 | uint32(data[2])<<16
+}
+func decodeLengthEncodedString(data []byte) (string, error) {
+	if len(data) < 1 {
+		return "", errors.New("data too short")
+	}
+
+	// Get the length of the string
+	var length uint64
+	switch data[0] {
+	case 0xfb:
+		return "", nil
+	case 0xfc:
+		if len(data) < 3 {
+			return "", errors.New("data too short for 2-byte length")
+		}
+		length = uint64(binary.LittleEndian.Uint16(data[1:3]))
+		data = data[3:]
+	case 0xfd:
+		if len(data) < 4 {
+			return "", errors.New("data too short for 3-byte length")
+		}
+		length = uint64(Uint24(data[1:4]))
+		data = data[4:]
+	case 0xfe:
+		if len(data) < 9 {
+			return "", errors.New("data too short for 8-byte length")
+		}
+		length = binary.LittleEndian.Uint64(data[1:9])
+		data = data[9:]
+	default:
+		length = uint64(data[0])
+		data = data[1:]
+	}
+
+	// Get the string
+	if uint64(len(data)) < length {
+		return "", errors.New("data too short for string")
+	}
+	s := string(data[:length])
+
+	return s, nil
+}
 
 func decodeMySQLOK(data []byte) (*OKPacket, error) {
 	if len(data) < 7 {
@@ -428,7 +1093,17 @@ func decodeMySQLOK(data []byte) (*OKPacket, error) {
 	packet.Warnings = binary.LittleEndian.Uint16(data)
 	data = data[2:]
 
-	packet.Info = string(data)
+	// Check if the data is a length-encoded string or ASCII numbers
+	if data[0] <= 250 {
+		// Length-encoded string
+		packet.Info, err = decodeLengthEncodedString(data)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode info: %w", err)
+		}
+	} else {
+		// ASCII numbers
+		packet.Info = string(data)
+	}
 
 	return packet, nil
 }
@@ -471,21 +1146,11 @@ func decodeMYSQLEOF(data []byte) (*EOFPacket, error) {
 
 	return packet, nil
 }
-func (p *MySQLPacket) Encode() ([]byte, error) {
-	packet := make([]byte, 4+len(p.Payload))
-
-	binary.LittleEndian.PutUint32(packet[:3], p.Header.PayloadLength)
-
-	packet[3] = p.Header.SequenceID
-
-	copy(packet[4:], p.Payload)
-
-	return packet, nil
-}
 
 type ComStmtFetchPacket struct {
 	StatementID uint32
 	RowCount    uint32
+	Info        string
 }
 
 func decodeComStmtFetch(data []byte) (ComStmtFetchPacket, error) {
@@ -496,9 +1161,14 @@ func decodeComStmtFetch(data []byte) (ComStmtFetchPacket, error) {
 	statementID := binary.LittleEndian.Uint32(data[1:5])
 	rowCount := binary.LittleEndian.Uint32(data[5:9])
 
+	// Assuming the info starts at the 10th byte
+	infoData := data[9:]
+	info := string(infoData)
+
 	return ComStmtFetchPacket{
 		StatementID: statementID,
 		RowCount:    rowCount,
+		Info:        info,
 	}, nil
 }
 
