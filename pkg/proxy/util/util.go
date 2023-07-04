@@ -1,12 +1,17 @@
 package util
 
 import (
+	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
+	"net"
 	"strconv"
 	"time"
 )
+
+const maxPacketSize = 1<<24 - 1
 
 // ToIPAddressStr converts the integer IP4 Address to the octet format
 func ToIPAddressStr(ip uint32) string {
@@ -49,4 +54,59 @@ func ReadBytes(reader io.Reader) ([]byte, error) {
 	}
 
 	return buffer, nil
+}
+
+var ErrInvalidConn = errors.New("invalid connection")
+
+func ReadPacket(destConn net.Conn) ([]byte, error) {
+	var prevData []byte
+	reader := bufio.NewReader(destConn)
+
+	for {
+		// read packet header
+		header := make([]byte, 4)
+		_, err := io.ReadFull(reader, header)
+		if err != nil {
+			// destConn.Close()
+			return nil, ErrInvalidConn
+		}
+
+		// packet length [24 bit]
+		pktLen := int(uint32(header[0]) | uint32(header[1])<<8 | uint32(header[2])<<16)
+
+		// packets with length 0 terminate a previous packet which is a
+		// multiple of (2^24)-1 bytes long
+		if pktLen == 0 {
+			// there was no previous packet
+			if prevData == nil {
+				// destConn.Close()
+				return nil, ErrInvalidConn
+			}
+
+			return prevData, nil
+		}
+
+		// read packet body [pktLen bytes]
+		data := make([]byte, pktLen)
+		_, err = io.ReadFull(reader, data)
+		if err != nil {
+			// destConn.Close()
+			return nil, ErrInvalidConn
+		}
+
+		// Combine the header and the body into a full packet
+		fullPacket := append(header, data...)
+
+		// return fullPacket if this was the last packet
+		if pktLen < maxPacketSize {
+			// zero allocations for non-split packets
+			if prevData == nil {
+				return fullPacket, nil
+			}
+
+			return append(prevData, fullPacket...), nil
+		}
+
+		prevData = append(prevData, fullPacket...)
+	}
 }

@@ -483,68 +483,256 @@ type ColumnDefinition struct {
 	Flags        uint16
 	Decimals     byte
 }
+
+const (
+	iOK                = 0x00
+	iERR               = 0xff
+	iLocalInFile       = 0xfb
+	iEOF          byte = 0xfe
+	fieldTypeNULL      = iota
+	fieldTypeTiny
+	fieldTypeShort
+	fieldTypeYear
+	fieldTypeInt24
+	fieldTypeLong
+	fieldTypeLongLong
+	fieldTypeFloat
+	fieldTypeDouble
+	fieldTypeDecimal
+	fieldTypeNewDecimal
+	fieldTypeVarChar
+	fieldTypeBit
+	fieldTypeEnum
+	fieldTypeSet
+	fieldTypeTinyBLOB
+	fieldTypeMediumBLOB
+	fieldTypeLongBLOB
+	fieldTypeBLOB
+	fieldTypeVarString
+	fieldTypeString
+	fieldTypeGeometry
+	fieldTypeJSON
+	fieldTypeDate
+	fieldTypeNewDate
+	fieldTypeTime
+	fieldTypeTimestamp
+	fieldTypeDateTime
+	flagUnsigned
+	statusMoreResultsExists
+)
+
+type packetDecoder struct {
+	conn   net.Conn
+	status statusFlag
+}
 type binaryRows struct {
 	pd      *packetDecoder
+	rs      resultSet
+	mc      mysqlConn
+	data    []byte
 	columns []mysqlField
 }
 
-func (pd *packetDecoder) readResultSetHeaderPacket() (int, error) {
-	data, err := pd.readPacket()
-	if err == nil {
-		switch data[0] {
-
-		case iOK:
-			return 0, pd.handleOkPacket(data)
-
-		case iERR:
-			return 0, pd.handleErrorPacket(data)
-
-		case iLocalInFile:
-			return 0, pd.handleInFileRequest(string(data[1:]))
-		}
-
-		// column count
-		num, _, n := readLengthEncodedInteger(data)
-		if n-len(data) == 0 {
-			return int(num), nil
-		}
-
-		return 0, ErrMalformPkt
-	}
-	return 0, err
+type resultSet struct {
+	columns []column
+	done    bool
 }
-func (pd *packetDecoder) readColumns(count int) ([]mysqlField, error) {
+
+type column struct {
+	fieldType int
+	flags     int
+	decimals  int
+}
+
+type mysqlConn struct {
+	status uint16
+	cfg    config
+}
+
+type config struct {
+	Loc int
+}
+
+var (
+	ErrMalformPkt = errors.New("malformed packet")
+)
+
+// func sendPacket(data []byte) error {
+// 	_, err := Write(data)
+// 	if err != nil {
+// 		return fmt.Errorf("error sending packet: %v", err)
+// 	}
+// 	return nil
+// }
+
+func handleOkPacket(data []byte) error {
+	// OK packets start with 0x00
+	if len(data) == 0 || data[0] != 0x00 {
+		return fmt.Errorf("not an OK packet")
+	}
+	return nil
+}
+
+func handleErrorPacket(data []byte) error {
+	errorCode := binary.LittleEndian.Uint16(data[1:3])
+	sqlState := string(data[4:9])
+	errorMessage := string(data[9:])
+	return fmt.Errorf("Received error packet: error code %d, SQL state %s, error message %s", errorCode, sqlState, errorMessage)
+}
+
+func ReadLengthEncodedString(b []byte) ([]byte, bool, int, error) {
+	// Get length
+	num, isNull, n := ReadLengthEncodedInteger(b)
+	if num < 1 {
+		return b[n:n], isNull, n, nil
+	}
+
+	n += int(num)
+
+	// Check data length
+	if len(b) >= n {
+		return b[n-int(num) : n : n], false, n, nil
+	}
+	return nil, false, n, io.EOF
+}
+
+// returns the number of bytes skipped and an error, in case the string is
+// longer than the input slice
+func skipLengthEncodedString(b []byte) (int, error) {
+	// Get length
+	num, _, n := readLengthEncodedInteger(b)
+	if num < 1 {
+		return n, nil
+	}
+
+	n += int(num)
+
+	// Check data length
+	if len(b) >= n {
+		return n, nil
+	}
+	return n, io.EOF
+}
+
+// returns the number read, whether the value is NULL and the number of bytes read
+func ReadLengthEncodedInteger(b []byte) (uint64, bool, int) {
+	if len(b) == 0 {
+		return 0, true, 1
+	}
+
+	switch b[0] {
+	// 251: NULL
+	case 0xfb:
+		return 0, true, 1
+
+	// 252: value of following 2
+	case 0xfc:
+		return uint64(b[1]) | uint64(b[2])<<8, false, 3
+
+	// 253: value of following 3
+	case 0xfd:
+		return uint64(b[1]) | uint64(b[2])<<8 | uint64(b[3])<<16, false, 4
+
+	// 254: value of following 8
+	case 0xfe:
+		return uint64(b[1]) | uint64(b[2])<<8 | uint64(b[3])<<16 |
+				uint64(b[4])<<24 | uint64(b[5])<<32 | uint64(b[6])<<40 |
+				uint64(b[7])<<48 | uint64(b[8])<<56,
+			false, 9
+	}
+
+	// 0-250: value of first byte
+	return uint64(b[0]), false, 1
+}
+
+// func handleInFileRequest(filename string) error {
+// 	file, err := os.Open(filename)
+// 	if err != nil {
+// 		return err
+// 	}
+// 	defer file.Close()
+// 	// Send the file content in packets of 4096 bytes
+// 	buf := make([]byte, 4096)
+// 	for {
+// 		n, err := file.Read(buf)
+// 		if err != nil {
+// 			if err == io.EOF {
+// 				break
+// 			}
+// 			return err
+// 		}
+// 		err = sendPacket(buf[:n])
+// 		if err != nil {
+// 			return err
+// 		}
+// 	}
+
+// 	return nil
+// }
+
+func readResultSetHeaderPacket(data []byte) (int, error) {
+	switch data[0] {
+	case iOK:
+		return 0, handleOkPacket(data)
+	case iERR:
+		return 0, handleErrorPacket(data)
+		// case iLocalInFile:
+		// 	return 0, handleInFileRequest(string(data[1:]))
+	}
+
+	// column count
+	num, _, n := ReadLengthEncodedInteger(data)
+	if n <= len(data) {
+		return int(num), nil
+	}
+	return 0, ErrMalformPkt
+}
+
+type fieldType byte
+type fieldFlag uint16
+type mysqlField struct {
+	tableName string
+	name      string
+	length    uint32
+	flags     fieldFlag
+	fieldType fieldType
+	decimals  byte
+	charSet   uint8
+}
+
+func readColumns(data []byte, count int) ([]mysqlField, error) {
 	columns := make([]mysqlField, count)
 
-	for i := 0; ; i++ {
-		data, err := pd.readPacket()
-		if err != nil {
-			return nil, err
-		}
+	var pos int
+	for i := 0; i < count; i++ {
 
 		// EOF Packet
-		if data[0] == iEOF && (len(data) == 5 || len(data) == 1) {
+		if data[pos] == iEOF && (len(data[pos:]) == 5 || len(data[pos:]) == 1) {
 			if i == count {
 				return columns, nil
 			}
 			return nil, fmt.Errorf("column count mismatch n:%d len:%d", count, len(columns))
 		}
 
+		var n int
+		var err error
+
 		// Catalog
-		pos, err := skipLengthEncodedString(data)
+		pos, err = skipLengthEncodedString(data[pos:])
 		if err != nil {
 			return nil, err
 		}
 
 		// Database [len coded string]
-		n, err := skipLengthEncodedString(data[pos:])
+		n, err = skipLengthEncodedString(data[pos:])
 		if err != nil {
 			return nil, err
 		}
 		pos += n
 
 		// Table [len coded string]
-		tableName, _, n, err := readLengthEncodedString(data[pos:])
+		var tableName []byte
+		tableName, _, n, err = ReadLengthEncodedString(data[pos:])
 		if err != nil {
 			return nil, err
 		}
@@ -559,7 +747,8 @@ func (pd *packetDecoder) readColumns(count int) ([]mysqlField, error) {
 		pos += n
 
 		// Name [len coded string]
-		name, _, n, err := readLengthEncodedString(data[pos:])
+		var name []byte
+		name, _, n, err = ReadLengthEncodedString(data[pos:])
 		if err != nil {
 			return nil, err
 		}
@@ -594,31 +783,57 @@ func (pd *packetDecoder) readColumns(count int) ([]mysqlField, error) {
 
 		// Decimals [uint8]
 		columns[i].decimals = data[pos]
+		pos++
 	}
+
+	return columns, nil
 }
 
-func (rows *binaryRows) readRow(dest []driver.Value) error {
-	data, err := rows.pd.readPacket()
-	if err != nil {
-		return err
+func (rows *binaryRows) HasNextResultSet() (b bool) {
+	if rows.pd == nil {
+		return false
+	}
+	return rows.mc.status&statusMoreResultsExists != 0
+}
+
+type statusFlag uint16
+
+func readStatus(b []byte) statusFlag {
+	return statusFlag(b[0]) | statusFlag(b[1])<<8
+}
+func uint64ToString(n uint64) []byte {
+	var a [20]byte
+	i := 20
+
+	// U+0030 = 0
+	// ...
+	// U+0039 = 9
+
+	var q uint64
+	for n >= 10 {
+		i--
+		q = n / 10
+		a[i] = uint8(n-q*10) + 0x30
+		n = q
 	}
 
+	i--
+	a[i] = uint8(n) + 0x30
+
+	return a[i:]
+}
+
+func readRow(data []byte, dest []driver.Value, columns []mysqlField) error {
+	var err error
 	// packet indicator [1 byte]
 	if data[0] != iOK {
 		// EOF Packet
 		if data[0] == iEOF && len(data) == 5 {
-			rows.mc.status = readStatus(data[3:])
-			rows.rs.done = true
-			if !rows.HasNextResultSet() {
-				rows.mc = nil
-			}
 			return io.EOF
 		}
-		mc := rows.mc
-		rows.mc = nil
 
 		// Error otherwise
-		return mc.handleErrorPacket(data)
+		return handleErrorPacket(data)
 	}
 
 	// NULL-bitmap,  [(column-count + 7 + 2) / 8 bytes]
@@ -634,14 +849,14 @@ func (rows *binaryRows) readRow(dest []driver.Value) error {
 		}
 
 		// Convert to byte-coded string
-		switch rows.rs.columns[i].fieldType {
+		switch columns[i].fieldType {
 		case fieldTypeNULL:
 			dest[i] = nil
 			continue
 
 		// Numeric Types
 		case fieldTypeTiny:
-			if rows.rs.columns[i].flags&flagUnsigned != 0 {
+			if columns[i].flags&flagUnsigned != 0 {
 				dest[i] = int64(data[pos])
 			} else {
 				dest[i] = int64(int8(data[pos]))
@@ -650,7 +865,7 @@ func (rows *binaryRows) readRow(dest []driver.Value) error {
 			continue
 
 		case fieldTypeShort, fieldTypeYear:
-			if rows.rs.columns[i].flags&flagUnsigned != 0 {
+			if columns[i].flags&flagUnsigned != 0 {
 				dest[i] = int64(binary.LittleEndian.Uint16(data[pos : pos+2]))
 			} else {
 				dest[i] = int64(int16(binary.LittleEndian.Uint16(data[pos : pos+2])))
@@ -659,7 +874,7 @@ func (rows *binaryRows) readRow(dest []driver.Value) error {
 			continue
 
 		case fieldTypeInt24, fieldTypeLong:
-			if rows.rs.columns[i].flags&flagUnsigned != 0 {
+			if columns[i].flags&flagUnsigned != 0 {
 				dest[i] = int64(binary.LittleEndian.Uint32(data[pos : pos+4]))
 			} else {
 				dest[i] = int64(int32(binary.LittleEndian.Uint32(data[pos : pos+4])))
@@ -668,7 +883,7 @@ func (rows *binaryRows) readRow(dest []driver.Value) error {
 			continue
 
 		case fieldTypeLongLong:
-			if rows.rs.columns[i].flags&flagUnsigned != 0 {
+			if columns[i].flags&flagUnsigned != 0 {
 				val := binary.LittleEndian.Uint64(data[pos : pos+8])
 				if val > math.MaxInt64 {
 					dest[i] = uint64ToString(val)
@@ -698,7 +913,7 @@ func (rows *binaryRows) readRow(dest []driver.Value) error {
 			fieldTypeVarString, fieldTypeString, fieldTypeGeometry, fieldTypeJSON:
 			var isNull bool
 			var n int
-			dest[i], isNull, n, err = readLengthEncodedString(data[pos:])
+			dest[i], isNull, n, err = ReadLengthEncodedString(data[pos:])
 			pos += n
 			if err == nil {
 				if !isNull {
@@ -715,49 +930,8 @@ func (rows *binaryRows) readRow(dest []driver.Value) error {
 			fieldTypeTime,                         // Time [-][H]HH:MM:SS[.fractal]
 			fieldTypeTimestamp, fieldTypeDateTime: // Timestamp YYYY-MM-DD HH:MM:SS[.fractal]
 
-			num, isNull, n := readLengthEncodedInteger(data[pos:])
+			num, _, n := ReadLengthEncodedInteger(data[pos:])
 			pos += n
-
-			switch {
-			case isNull:
-				dest[i] = nil
-				continue
-			case rows.rs.columns[i].fieldType == fieldTypeTime:
-				// database/sql does not support an equivalent to TIME, return a string
-				var dstlen uint8
-				switch decimals := rows.rs.columns[i].decimals; decimals {
-				case 0x00, 0x1f:
-					dstlen = 8
-				case 1, 2, 3, 4, 5, 6:
-					dstlen = 8 + 1 + decimals
-				default:
-					return fmt.Errorf(
-						"protocol error, illegal decimals value %d",
-						rows.rs.columns[i].decimals,
-					)
-				}
-				dest[i], err = formatBinaryTime(data[pos:pos+int(num)], dstlen)
-			case rows.mc.parseTime:
-				dest[i], err = parseBinaryDateTime(num, data[pos:], rows.mc.cfg.Loc)
-			default:
-				var dstlen uint8
-				if rows.rs.columns[i].fieldType == fieldTypeDate {
-					dstlen = 10
-				} else {
-					switch decimals := rows.rs.columns[i].decimals; decimals {
-					case 0x00, 0x1f:
-						dstlen = 19
-					case 1, 2, 3, 4, 5, 6:
-						dstlen = 19 + 1 + decimals
-					default:
-						return fmt.Errorf(
-							"protocol error, illegal decimals value %d",
-							rows.rs.columns[i].decimals,
-						)
-					}
-				}
-				dest[i], err = formatBinaryDateTime(data[pos:pos+int(num)], dstlen)
-			}
 
 			if err == nil {
 				pos += int(num)
@@ -765,26 +939,31 @@ func (rows *binaryRows) readRow(dest []driver.Value) error {
 			} else {
 				return err
 			}
-
-		// Please report if this happens!
 		default:
-			return fmt.Errorf("unknown field type %d", rows.rs.columns[i].fieldType)
+			return fmt.Errorf("unknown field type %d", columns[i].fieldType)
 		}
 	}
 
 	return nil
 }
 
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+func (pd *packetDecoder) getData() ([]byte, error) {
+	// Define a buffer to read the data into
+	buf := make([]byte, 4096) // Choose an appropriate size
 
-type packetDecoder struct {
-	net.Conn
-	// add other fields if needed
+	// Read the data from the connection
+	n, err := pd.conn.Read(buf)
+	if err != nil {
+		// Handle the error
+		return nil, err
+	}
+
+	// Return the read data
+	return buf[:n], nil
 }
 
 func (pd *packetDecoder) readPacket() ([]byte, error) {
-	// Implement your packet reading logic using pd.conn here
-	// This is just a placeholder
 	var buf [4]byte
 	if _, err := io.ReadFull(pd.conn, buf[:]); err != nil {
 		return nil, err
@@ -796,41 +975,37 @@ func (pd *packetDecoder) readPacket() ([]byte, error) {
 	}
 	return data, nil
 }
+func DecodeResultSet(data []byte, destConn net.Conn) ([][]driver.Value, error) {
 
-func (pd *packetDecoder) DecodeResultSet(destConn net.Conn) ([][]driver.Value, error) {
-	pd = packetDecoder{Conn: destConn}
-
-	// Read ResultSetHeaderPacket
-	num, err := pd.readResultSetHeaderPacket()
+	num, err := readResultSetHeaderPacket(data)
 	if err != nil {
 		return nil, err
 	}
 
 	// Read columns
-	columns, err := pd.readColumns(num)
+	columns, err := readColumns(data, num)
 	if err != nil {
 		return nil, err
 	}
 
 	var rows [][]driver.Value
 
-	// Keep reading rows until the EOF packet
 	for {
-		// Create a binaryRows object
-		br := &binaryRows{
-			mc:      pd,
-			columns: columns,
-		}
+		// Prepare row
 		row := make([]driver.Value, len(columns))
-		err := br.readRow(row)
+
+		// Read row
+		err = readRow(data, row, columns)
 		if err != nil {
 			if err == io.EOF {
 				break
 			}
 			return nil, err
 		}
+
 		rows = append(rows, row)
 	}
+
 	return rows, nil
 }
 
