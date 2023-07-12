@@ -2,6 +2,7 @@ package mysqlparser
 
 import (
 	"encoding/binary"
+	"fmt"
 	"net"
 	"time"
 
@@ -125,6 +126,8 @@ func handleClientQueries(initialBuffer []byte, clientConn, destConn net.Conn, lo
 			logger.Error("Failed to decode the MySQL packet from the destination server", zap.Error(err))
 			continue
 		}
+		fmt.Print("the request ", mysqlRequest)
+		fmt.Print("the response ", mysqlResp)
 
 		meta := map[string]string{
 			"operation":         opr,
