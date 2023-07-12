@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -482,38 +484,10 @@ type ColumnDefinition struct {
 }
 
 const (
-	iOK                = 0x00
-	iERR               = 0xff
-	iLocalInFile       = 0xfb
-	iEOF          byte = 0xfe
-	fieldTypeNULL      = iota
-	fieldTypeTiny
-	fieldTypeShort
-	fieldTypeYear
-	fieldTypeInt24
-	fieldTypeLong
-	fieldTypeLongLong
-	fieldTypeFloat
-	fieldTypeDouble
-	fieldTypeDecimal
-	fieldTypeNewDecimal
-	fieldTypeVarChar
-	fieldTypeBit
-	fieldTypeEnum
-	fieldTypeSet
-	fieldTypeTinyBLOB
-	fieldTypeMediumBLOB
-	fieldTypeLongBLOB
-	fieldTypeBLOB
-	fieldTypeVarString
-	fieldTypeString
-	fieldTypeGeometry
-	fieldTypeJSON
-	fieldTypeDate
-	fieldTypeNewDate
-	fieldTypeTime
-	fieldTypeTimestamp
-	fieldTypeDateTime
+	iOK               = 0x00
+	iERR              = 0xff
+	iLocalInFile      = 0xfb
+	iEOF         byte = 0xfe
 	flagUnsigned
 	statusMoreResultsExists
 )
@@ -593,7 +567,6 @@ func readLengthEncodedStrings(b []byte) (string, int) {
 	return string(b[n : n+int(length)]), n + int(length)
 }
 
-type fieldType byte
 type fieldFlag uint16
 type mysqlField struct {
 	tableName string
@@ -678,13 +651,22 @@ func parseRow(b []byte, columnDefinitions []*ColumnDefinitionPacket) (*Row, []by
 
 	b = b[9:] // Skip the EOF marker
 
+	// Read the first byte after the EOF marker and convert it to an integer
+	skip, err := strconv.Atoi(string(b[0]))
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to convert byte to integer: %v", err)
+	}
+
+	// Skip the bytes
+	b = b[skip:]
+
 	// Process each column
 	for _, column := range columnDefinitions {
 		var value interface{}
 		var length int
 
 		//for timestamps
-		if column.Name == "created_at" || column.Name == "updated_at" {
+		if column.ColumnType == "fieldTypeTimestamp" {
 			if len(b) < 8 {
 				return nil, nil, fmt.Errorf("byte slice too short for timestamps")
 			}
@@ -697,6 +679,7 @@ func parseRow(b []byte, columnDefinitions []*ColumnDefinitionPacket) (*Row, []by
 			if idx == -1 {
 				return nil, nil, fmt.Errorf("expected byte not found")
 			}
+
 			// Find the first non-null character
 			start := bytes.IndexFunc(b[:idx], func(r rune) bool {
 				return r != '\x00'
@@ -704,7 +687,12 @@ func parseRow(b []byte, columnDefinitions []*ColumnDefinitionPacket) (*Row, []by
 			if start == -1 {
 				return nil, nil, fmt.Errorf("non-null character not found")
 			}
-			value = string(b[start:idx])
+
+			// Extract the string, remove non-printable characters
+			str := string(b[start:idx])
+			re := regexp.MustCompile(`[^[:print:]\t\r\n]`)
+			cleanedStr := re.ReplaceAllString(str, "")
+			value = cleanedStr
 			length = idx + 1
 		}
 
@@ -764,7 +752,7 @@ type ColumnDefinitionPacket struct {
 	OrgName      string
 	CharacterSet uint16
 	ColumnLength uint32
-	ColumnType   uint8
+	ColumnType   string
 	Flags        uint16
 	Decimals     uint8
 	Filler       uint16
@@ -801,8 +789,13 @@ func parseColumnDefinitionPacket(b []byte) (*ColumnDefinitionPacket, []byte, err
 	b = b[2:]
 	packet.ColumnLength = binary.LittleEndian.Uint32(b)
 	b = b[4:]
-	packet.ColumnType = uint8(b[0])
+	if name, ok := fieldTypeNames[fieldType(b[0])]; ok {
+		packet.ColumnType = name
+	} else {
+		packet.ColumnType = "unknown"
+	}
 	b = b[1:]
+
 	packet.Flags = binary.LittleEndian.Uint16(b)
 	b = b[2:]
 	packet.Decimals = uint8(b[0])
