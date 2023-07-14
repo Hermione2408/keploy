@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"regexp"
 	"strconv"
@@ -211,10 +212,10 @@ func (p *MySQLPacket) Encode() ([]byte, error) {
 	return packet, nil
 }
 
+var lastCommand byte // This is global and will remember the last command
+
 func DecodeMySQLPacket(packet MySQLPacket, logger *zap.Logger, destConn net.Conn) (string, MySQLPacketHeader, interface{}, error) {
 	data := packet.Payload
-
-	// Directly use the header from the packet
 	header := packet.Header
 
 	var packetData interface{}
@@ -225,40 +226,60 @@ func DecodeMySQLPacket(packet MySQLPacket, logger *zap.Logger, destConn net.Conn
 	case data[0] == 0x0e: // COM_PING
 		packetType = "COM_PING"
 		packetData, err = decodeComPing(data)
+		lastCommand = 0x0e
 	case data[0] == 0x17: // COM_STMT_EXECUTE
 		packetType = "COM_STMT_EXECUTE"
 		packetData, err = decodeComStmtExecute(data)
-	case data[0] == 0x16: // COM_STMT_FETCH
+		lastCommand = 0x17
+	case data[0] == 0x1c: // COM_STMT_FETCH
 		packetType = "COM_STMT_FETCH"
 		packetData, err = decodeComStmtFetch(data)
+		lastCommand = 0x1c
+	case data[0] == 0x16: // COM_STMT_PREPARE
+		packetType = "COM_STMT_PREPARE"
+		packetData, err = decodeComStmtPrepare(data)
+		lastCommand = 0x16
+	case data[0] == 0x19: // COM_STMT_CLOSE
+		packetType = "COM_STMT_CLOSE"
+		packetData, err = decodeComStmtClose(data)
+		lastCommand = 0x19
 	case data[0] == 0x11: // COM_CHANGE_USER
 		packetType = "COM_CHANGE_USER"
 		packetData, err = decodeComChangeUser(data)
-	case data[0] == 0x04: // Result Set Packet (First byte 0x04 may indicate a length-encoded integer, which is common in result set packets)
-		fmt.Print("\n Result Set Packet \n", data)
+		lastCommand = 0x11
+	case data[0] == 0x04: // Result Set Packet
 		packetType = "Result Set Packet"
 		packetData, err = parseResultSet(data)
-	case data[0] == 0x0A:
+		lastCommand = 0x04
+	case data[0] == 0x0A: // MySQLHandshakeV10
 		packetType = "MySQLHandshakeV10"
 		packetData, err = decodeMySQLHandshakeV10(data)
-	case data[0] == 0x03:
+		lastCommand = 0x0A
+	case data[0] == 0x03: // MySQLQuery
 		packetType = "MySQLQuery"
 		packetData, err = decodeMySQLQuery(data)
-	case data[0] == 0x00:
-		packetType = "MySQLOK"
-		packetData, err = decodeMySQLOK(data)
-	case data[0] == 0xFF:
+		lastCommand = 0x03
+	case data[0] == 0x00: // MySQLOK or COM_STMT_PREPARE_OK
+		if lastCommand == 0x16 {
+			packetType = "COM_STMT_PREPARE_OK"
+			packetData, err = decodeComStmtPrepareOk(data)
+		} else {
+			packetType = "MySQLOK"
+			packetData, err = decodeMySQLOK(data)
+		}
+		lastCommand = 0x00
+	case data[0] == 0xFF: // MySQLErr
 		packetType = "MySQLErr"
 		packetData, err = decodeMySQLErr(data)
+		lastCommand = 0xFF
 	case data[0] == 0xFE: // EOF packet
 		packetType = "MySQLEOF"
 		packetData, err = decodeMYSQLEOF(data)
+		lastCommand = 0xFE
 	case data[0] == 0x02: // New packet type
-		packetType = "MySQLOK"
+		packetType = "NewPacketType2"
 		packetData, err = decodePacketType2(data)
-	case data[0] == 0x19: // New case for packet type 25
-		packetType = "Control/Ping_Packet"
-		packetData = nil
+		lastCommand = 0x02
 	default:
 		packetType = "Unknown"
 		packetData = data
@@ -270,6 +291,48 @@ func DecodeMySQLPacket(packet MySQLPacket, logger *zap.Logger, destConn net.Conn
 	}
 
 	return packetType, header, packetData, nil
+}
+
+func decodeComStmtPrepare(data []byte) (string, error) {
+	if len(data) < 1 {
+		return "", errors.New("data too short for COM_STMT_PREPARE")
+	}
+	// data[1:] will skip the command byte and leave the query string
+	return string(data[1:]), nil
+}
+
+func decodeComStmtClose(data []byte) (uint32, error) {
+	if len(data) < 5 {
+		return 0, errors.New("data too short for COM_STMT_CLOSE")
+	}
+	// Statement ID is 4-byte, little-endian integer after command byte
+	statementID := binary.LittleEndian.Uint32(data[1:])
+	return statementID, nil
+}
+
+type StmtPrepareOk struct {
+	Status       byte
+	StatementID  uint32
+	NumColumns   uint16
+	NumParams    uint16
+	WarningCount uint16
+}
+
+func decodeComStmtPrepareOk(data []byte) (*StmtPrepareOk, error) {
+	// ensure the packet is long enough
+	if len(data) < 12 {
+		return nil, errors.New("data length is not enough for COM_STMT_PREPARE_OK")
+	}
+	// construct the response
+	response := &StmtPrepareOk{
+		Status:      data[0],
+		StatementID: binary.LittleEndian.Uint32(data[1:5]),
+		NumColumns:  binary.LittleEndian.Uint16(data[5:7]),
+		NumParams:   binary.LittleEndian.Uint16(data[7:9]),
+		// skip filler byte at data[9]
+		WarningCount: binary.LittleEndian.Uint16(data[10:12]),
+	}
+	return response, nil
 }
 
 type RowDataPacket struct {
@@ -649,9 +712,15 @@ func parseRow(b []byte, columnDefinitions []*ColumnDefinitionPacket) (*Row, []by
 		Columns: make(map[string]interface{}),
 	}
 
-	b = b[9:] // Skip the EOF marker
+	// Check for EOF marker at the start of b and skip it
+	EOFMarker := []byte{0x05, 0x00, 0x00, 0x06, 0xfe, 0x00, 0x00, 0x02, 0x00}
+	if len(b) >= 9 && bytes.Equal(b[:9], EOFMarker) {
+		b = b[9:]
+	} else {
+		return nil, nil, nil
+	}
+	//server status
 
-	// Read the first byte after the EOF marker and convert it to an integer
 	skip, err := strconv.Atoi(string(b[0]))
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to convert byte to integer: %v", err)
@@ -665,17 +734,29 @@ func parseRow(b []byte, columnDefinitions []*ColumnDefinitionPacket) (*Row, []by
 		var value interface{}
 		var length int
 
-		//for timestamps
-		if column.ColumnType == "fieldTypeTimestamp" {
+		switch column.ColumnType {
+		case "fieldTypeTimestamp":
 			if len(b) < 8 {
 				return nil, nil, fmt.Errorf("byte slice too short for timestamps")
 			}
 			unixTime := binary.BigEndian.Uint64(b[:8])
 			value = time.Unix(0, int64(unixTime)).Format(time.RFC3339)
 			length = 8
-		} else {
+		case "fieldTypeInt24", "fieldTypeLong":
+			value = int32(binary.LittleEndian.Uint32(b[:4]))
+			length = 4
+		case "fieldTypeLongLong":
+			value = int64(binary.LittleEndian.Uint64(b[:8]))
+			length = 8
+		case "fieldTypeFloat":
+			value = math.Float32frombits(binary.LittleEndian.Uint32(b[:4]))
+			length = 4
+		case "fieldTypeDouble":
+			value = math.Float64frombits(binary.LittleEndian.Uint64(b[:8]))
+			length = 8
+		default:
 			// Find the next special byte (either 0x0b or 0x17)
-			idx := bytes.IndexAny(b, "\x0b\x17")
+			idx := bytes.IndexAny(b, "\x0b\x17\xe17")
 			if idx == -1 {
 				return nil, nil, fmt.Errorf("expected byte not found")
 			}

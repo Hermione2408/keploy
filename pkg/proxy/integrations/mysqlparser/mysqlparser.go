@@ -85,9 +85,9 @@ func handleClientQueries(initialBuffer []byte, clientConn, destConn net.Conn, lo
 				return nil, err
 			}
 		}
-
+		opr, requestHeader, mysqlRequest, err := DecodeMySQLPacket(bytesToMySQLPacket(queryBuffer), logger, destConn)
 		// Break the loop when the client stops sending data
-		if len(queryBuffer) == 0 {
+		if len(queryBuffer) == 0 || opr == "COM_STMT_CLOSE" {
 			break
 		}
 
@@ -115,7 +115,7 @@ func handleClientQueries(initialBuffer []byte, clientConn, destConn net.Conn, lo
 			return nil, err
 		}
 
-		opr, requestHeader, mysqlRequest, err := DecodeMySQLPacket(bytesToMySQLPacket(queryBuffer), logger, destConn)
+		opr, requestHeader, mysqlRequest, err = DecodeMySQLPacket(bytesToMySQLPacket(queryBuffer), logger, destConn)
 		if err != nil {
 			logger.Error("Failed to decode the MySQL packet from the client", zap.Error(err))
 			continue
