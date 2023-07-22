@@ -557,7 +557,7 @@ func handleTLSConnection(conn net.Conn) (net.Conn, error) {
 
 // handleConnection function executes the actual outgoing network call and captures/forwards the request and response messages.
 func (ps *ProxySet) handleConnection(conn net.Conn, port uint32) {
-
+	fmt.Printf("IN handle Connection")
 	//checking how much time proxy takes to execute the flow.
 	start := time.Now()
 
