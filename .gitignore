@@ -38,7 +38,7 @@ test-reports
 
 #Ignore the test reports
 test-reports
-
+Keploy-Tests-2
 #Ignore the c and header files
 *.c
 *.h
