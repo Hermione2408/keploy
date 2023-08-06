@@ -1,0 +1,113 @@
+version: api.keploy.io/v1beta2
+kind: SQL
+name: mocks
+spec:
+    metadata:
+        operation: MySQLQuery
+        responseOperation: MySQLOK
+    requests:
+        - header:
+            packet_length: 193
+            packet_number: 0
+          message:
+            command: 3
+            query: |-
+                CREATE TABLE IF NOT EXISTS url_map (
+                		id char(8) NOT NULL,
+                		redirect_url varchar(150) NOT NULL UNIQUE,
+                		created_at timestamp NOT NULL,
+                		updated_at timestamp NOT NULL,
+                		PRIMARY KEY(id)
+                	);
+    responses:
+        - header:
+            packet_length: 7
+            packet_number: 0
+          message: null
+    created: 1691312781
+---
+version: api.keploy.io/v1beta2
+kind: SQL
+name: mocks
+spec:
+    metadata:
+        operation: COM_STMT_PREPARE
+        responseOperation: COM_STMT_PREPARE_OK
+    requests:
+        - header:
+            packet_length: 193
+            packet_number: 0
+          message:
+            command: 3
+            query: |-
+                CREATE TABLE IF NOT EXISTS url_map (
+                		id char(8) NOT NULL,
+                		redirect_url varchar(150) NOT NULL UNIQUE,
+                		created_at timestamp NOT NULL,
+                		updated_at timestamp NOT NULL,
+                		PRIMARY KEY(id)
+                	);
+        - header:
+            packet_length: 48
+            packet_number: 0
+          message: "\n\t\t\tSELECT * \n\t\t\tFROM url_map\n\t\t\tWHERE id = ?\n\t"
+    responses:
+        - header:
+            packet_length: 7
+            packet_number: 0
+          message: null
+        - header:
+            packet_length: 12
+            packet_number: 0
+          message: null
+    created: 1691312785
+---
+version: api.keploy.io/v1beta2
+kind: SQL
+name: mocks
+spec:
+    metadata:
+        operation: COM_STMT_EXECUTE
+        responseOperation: Result Set Packet
+    requests:
+        - header:
+            packet_length: 193
+            packet_number: 0
+          message:
+            command: 3
+            query: |-
+                CREATE TABLE IF NOT EXISTS url_map (
+                		id char(8) NOT NULL,
+                		redirect_url varchar(150) NOT NULL UNIQUE,
+                		created_at timestamp NOT NULL,
+                		updated_at timestamp NOT NULL,
+                		PRIMARY KEY(id)
+                	);
+        - header:
+            packet_length: 48
+            packet_number: 0
+          message: "\n\t\t\tSELECT * \n\t\t\tFROM url_map\n\t\t\tWHERE id = ?\n\t"
+        - header:
+            packet_length: 23
+            packet_number: 0
+          message:
+            statementid: 1
+            flags: 0
+            iterationcount: 1
+            nullbitmap: []
+            paramcount: 256
+            parameters: []
+    responses:
+        - header:
+            packet_length: 7
+            packet_number: 0
+          message: null
+        - header:
+            packet_length: 12
+            packet_number: 0
+          message: null
+        - header:
+            packet_length: 1
+            packet_number: 0
+          message: null
+    created: 1691312790
