@@ -475,12 +475,13 @@ func decodeRowData(data []byte, columns []ColumnDefinition) ([]RowDataPacket, []
 // }
 
 type OKPacket struct {
-	AffectedRows uint64
-	LastInsertID uint64
-	StatusFlags  uint16
-	Warnings     uint16
-	Info         string
+	AffectedRows uint64 `json:"affected_rows,omitempty" yaml:"affected_rows"`
+	LastInsertID uint64 `json:"last_insert_id,omitempty" yaml:"last_insert_id"`
+	StatusFlags  uint16 `json:"status_flags,omitempty" yaml:"status_flags"`
+	Warnings     uint16 `json:"warnings,omitempty" yaml:"warnings"`
+	Info         string `json:"info,omitempty" yaml:"info"`
 }
+
 type ResultSet struct {
 	ColumnCount       int
 	ColumnDefinitions []ColumnDefinition

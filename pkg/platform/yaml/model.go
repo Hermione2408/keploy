@@ -131,18 +131,22 @@ func EncodeMock(mock *models.Mock, logger *zap.Logger) (*NetworkTrafficDoc, erro
 		responses := []spec.MysqlResponseYaml{}
 		for _, v := range mock.Spec.MySqlResponses {
 			resp := spec.MysqlResponseYaml{
-				Header: v.Header,
-				// Add appropriate fields as per your structure
+				Header:    v.Header,
+				ReadDelay: v.ReadDelay,
 			}
-			// Implement the encoding logic for SQL response if needed
+			err := resp.Message.Encode(v.Message)
+			if err != nil {
+				logger.Error(Emoji+"failed to encode mongo request wiremessage into yaml", zap.Error(err))
+				return nil, err
+			}
 			responses = append(responses, resp)
 		}
+
 		sqlSpec := spec.MySQLSpec{
 			Metadata:  mock.Spec.Metadata,
 			Requests:  requests,
 			Response:  responses,
 			CreatedAt: mock.Spec.Created,
-			// Other fields if needed
 		}
 		err := yamlDoc.Spec.Encode(sqlSpec)
 		if err != nil {

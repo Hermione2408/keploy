@@ -77,59 +77,66 @@ func encodeOutgoingMySql(clientConnId, destConnId int, requestBuffer []byte, cli
 				logger.Error("failed to read packet from server after handshake", zap.Error(err))
 				return
 			}
-			//fmt.Println("the packet from mysql server after handshake", (okPacket1))
+			// Forwarding the auth switch request to the client
 			_, err = clientConn.Write(okPacket1)
-
 			if err != nil {
-				logger.Error("failed to write the packet to mysql client", zap.Error(err))
+				logger.Error("failed to write auth switch request to client", zap.Error(err))
 				return
 			}
-			// okpacket2, err := util.ReadBytes(clientConn)
-			// if err != nil {
-			// 	logger.Error("failed to read handshake respnse from client", zap.Error(err))
-			// 	return
-			// }
 
-			// _, err = destConn.Write(okpacket2)
-			// if err != nil {
-			// 	logger.Error("failed to write handshake respnse to server", zap.Error(err))
-			// 	return
-			// }
-			// okPacket3, err := util.ReadBytes(destConn)
-			// if err != nil {
-			// 	logger.Error("failed to read packet from server after handshake", zap.Error(err))
-			// 	return
-			// }
-			// // Write the server's public key to the client
-			// _, err = clientConn.Write(okPacket3)
-			// if err != nil {
-			// 	logger.Error("failed to write the packet to mysql client", zap.Error(err))
-			// 	return
-			// }
-			// // Read the client's encrypted password
-			// encryptedPassword, err := util.ReadBytes(clientConn)
-			// if err != nil {
-			// 	logger.Error("failed to read handshake response from client", zap.Error(err))
-			// 	return
-			// }
-			// // Forward the client's encrypted password to the server
-			// _, err = destConn.Write(encryptedPassword)
-			// if err != nil {
-			// 	logger.Error("failed to write handshake response to server", zap.Error(err))
-			// 	return
-			// }
-			// // Now the server will respond with an OK packet if the authentication is successful
-			// okPacket4, err := util.ReadBytes(destConn)
-			// if err != nil {
-			// 	logger.Error("failed to read packet from server after handshake", zap.Error(err))
-			// 	return
-			// }
-			// // Write the server's OK packet to the client
-			// _, err = clientConn.Write(okPacket4)
-			// if err != nil {
-			// 	logger.Error("failed to write the packet to mysql client", zap.Error(err))
-			// 	return
-			// }
+			// Reading client's response to the auth switch request
+			clientResponse, err := util.ReadBytes(clientConn)
+			if err != nil {
+				logger.Error("failed to read response from client", zap.Error(err))
+				return
+			}
+
+			// Forwarding client's response to the server
+			_, err = destConn.Write(clientResponse)
+			if err != nil {
+				logger.Error("failed to write client's response to server", zap.Error(err))
+				return
+			}
+
+			// Reading server's final response
+			finalServerResponse, err := util.ReadBytes(destConn)
+			if err != nil {
+				logger.Error("failed to read final response from server", zap.Error(err))
+				return
+			}
+
+			_, err = clientConn.Write(finalServerResponse)
+			if err != nil {
+				logger.Error("failed to write final response to client", zap.Error(err))
+				return
+			}
+
+			// Reading encrypted authentication data from the client
+			encryptedAuthData, err := util.ReadBytes(clientConn)
+			if err != nil {
+				logger.Error("failed to read encrypted authentication data from client", zap.Error(err))
+				return
+			}
+
+			// Forwarding encrypted authentication data to the server
+			_, err = destConn.Write(encryptedAuthData)
+			if err != nil {
+				logger.Error("failed to write encrypted authentication data to server", zap.Error(err))
+				return
+			}
+
+			// Reading server's final response
+			finalServerResponse1, err := util.ReadBytes(destConn)
+			if err != nil {
+				logger.Error("failed to read final response from server", zap.Error(err))
+				return
+			}
+
+			_, err = clientConn.Write(finalServerResponse1)
+			if err != nil {
+				logger.Error("failed to write final response to client", zap.Error(err))
+				return
+			}
 
 			//handshake complete
 
