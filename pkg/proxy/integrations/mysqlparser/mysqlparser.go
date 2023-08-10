@@ -2,7 +2,6 @@ package mysqlparser
 
 import (
 	"encoding/binary"
-	"fmt"
 	"net"
 	"time"
 
@@ -41,6 +40,10 @@ func ProcessOutgoingMySql(clientConnId, destConnId int, requestBuffer []byte, cl
 
 func encodeOutgoingMySql(clientConnId, destConnId int, requestBuffer []byte, clientConn, destConn net.Conn, h *hooks.Hook, started time.Time, readRequestDelay time.Duration, logger *zap.Logger) {
 	// var deps []*models.Mock
+	var (
+		mysqlRequests  = []models.MySQLRequest{}
+		mysqlResponses = []models.MySQLResponse{}
+	)
 	for {
 		data, source, err := ReadFirstBuffer(clientConn, destConn)
 		if err != nil {
@@ -83,9 +86,9 @@ func encodeOutgoingMySql(clientConnId, destConnId int, requestBuffer []byte, cli
 				logger.Error("failed to write auth switch request to client", zap.Error(err))
 				return
 			}
-			operation, requestHeader, mysqlRequest, err := DecodeMySQLPacket(bytesToMySQLPacket(okPacket1), logger, destConn)
-			fmt.Printf(operation, requestHeader, mysqlRequest)
-			if operation == "AuthSwitchRequest" {
+			operationToCheck, _, _, _ := DecodeMySQLPacket(bytesToMySQLPacket(okPacket1), logger, destConn)
+
+			if operationToCheck == "AuthSwitchRequest" {
 
 				// Reading client's response to the auth switch request
 				clientResponse, err := util.ReadBytes(clientConn)
@@ -141,17 +144,44 @@ func encodeOutgoingMySql(clientConnId, destConnId int, requestBuffer []byte, cli
 					return
 				}
 				//handshake complete
+				_, responseHeader, mysqlResp, err := DecodeMySQLPacket(bytesToMySQLPacket(finalServerResponse1), logger, destConn)
+				if err != nil {
+					logger.Error("Failed to decode the handshake response from the destination server", zap.Error(err))
+					continue
+				}
+				mysqlResponses = append(mysqlResponses, models.MySQLResponse{
+					Header: &models.MySQLPacketHeader{
+						PacketLength: responseHeader.PayloadLength,
+						PacketNumber: responseHeader.SequenceID,
+					},
+					Message: mysqlResp,
+				})
+
+			} else {
+				_, responseHeader, mysqlResp, err := DecodeMySQLPacket(bytesToMySQLPacket(okPacket1), logger, destConn)
+				if err != nil {
+					logger.Error("Failed to decode the handshake response from the destination server", zap.Error(err))
+					continue
+				}
+				mysqlResponses = append(mysqlResponses, models.MySQLResponse{
+					Header: &models.MySQLPacketHeader{
+						PacketLength: responseHeader.PayloadLength,
+						PacketNumber: responseHeader.SequenceID,
+					},
+					Message: mysqlResp,
+				})
 
 			}
+
 			// After completing the handshake process, handle the client queries
-			_, err = handleClientQueries(h, nil, clientConn, destConn, logger)
+			_, err = handleClientQueries(h, nil, clientConn, destConn, logger, mysqlRequests, mysqlResponses)
 			if err != nil {
 				logger.Error("failed to handle client queries", zap.Error(err))
 				return
 			}
 		} else if source == "client" {
 			// queryBuffer := data
-			_, err = handleClientQueries(h, data, clientConn, destConn, logger)
+			_, err = handleClientQueries(h, nil, clientConn, destConn, logger, mysqlRequests, mysqlResponses)
 			if err != nil {
 				logger.Error("failed to handle client queries", zap.Error(err))
 				return
@@ -228,13 +258,12 @@ func ReadFirstBuffer(clientConn, destConn net.Conn) ([]byte, string, error) {
 	// Return any other error from reading destConn
 	return nil, "", err
 }
-func handleClientQueries(h *hooks.Hook, initialBuffer []byte, clientConn, destConn net.Conn, logger *zap.Logger) ([]*models.Mock, error) {
-	var (
-		mysqlRequests  = []models.MySQLRequest{}
-		mysqlResponses = []models.MySQLResponse{}
-	)
+func handleClientQueries(h *hooks.Hook, initialBuffer []byte, clientConn, destConn net.Conn, logger *zap.Logger, mysqlRequests []models.MySQLRequest, mysqlResponses []models.MySQLResponse) ([]*models.Mock, error) {
 	firstIteration := true
-
+	var (
+		operation         string
+		responseOperation string
+	)
 	for {
 		var queryBuffer []byte
 		var err error
@@ -283,7 +312,8 @@ func handleClientQueries(h *hooks.Hook, initialBuffer []byte, clientConn, destCo
 			return nil, err
 		}
 
-		responseOperation, responseHeader, mysqlResp, err := DecodeMySQLPacket(bytesToMySQLPacket(queryResponse), logger, destConn)
+		responseOp, responseHeader, mysqlResp, err := DecodeMySQLPacket(bytesToMySQLPacket(queryResponse), logger, destConn)
+		responseOperation = responseOp
 		if err != nil {
 			logger.Error("Failed to decode the MySQL packet from the destination server", zap.Error(err))
 			continue
@@ -295,9 +325,9 @@ func handleClientQueries(h *hooks.Hook, initialBuffer []byte, clientConn, destCo
 			},
 			Message: mysqlResp,
 		})
-		recordMySQLMessage(h, mysqlRequests, mysqlResponses, operation, responseOperation)
-
 	}
+	recordMySQLMessage(h, mysqlRequests, mysqlResponses, operation, responseOperation)
+
 	return nil, nil
 }
 
