@@ -284,6 +284,14 @@ func DecodeMySQLPacket(packet MySQLPacket, logger *zap.Logger, destConn net.Conn
 		packetType = "NewPacketType2"
 		packetData, err = decodePacketType2(data)
 		lastCommand = 0x02
+	case data[0] == 0x18: // SEND_LONG_DATA Packet
+		packetType = "COM_STMT_SEND_LONG_DATA"
+		packetData, err = decodeComStmtSendLongData(data)
+		lastCommand = 0x18
+	case data[0] == 0x1a: // STMT_RESET Packet
+		packetType = "COM_STMT_RESET"
+		packetData, err = decodeComStmtReset(data)
+		lastCommand = 0x1a
 	default:
 		packetType = "Unknown"
 		packetData = data
@@ -1315,4 +1323,37 @@ func decodeComPing(data []byte) (ComPingPacket, error) {
 	}
 
 	return ComPingPacket{}, nil
+}
+
+type COM_STMT_SEND_LONG_DATA struct {
+	StatementID uint32
+	ParameterID uint16
+	Data        []byte
+}
+
+// No response is sent back to client in this packet
+func decodeComStmtSendLongData(packet []byte) (COM_STMT_SEND_LONG_DATA, error) {
+	if len(packet) < 7 || packet[0] != 0x18 {
+		return COM_STMT_SEND_LONG_DATA{}, fmt.Errorf("invalid COM_STMT_SEND_LONG_DATA packet")
+	}
+	stmtID := binary.LittleEndian.Uint32(packet[1:5])
+	paramID := binary.LittleEndian.Uint16(packet[5:7])
+	data := packet[7:]
+	return COM_STMT_SEND_LONG_DATA{
+		StatementID: stmtID,
+		ParameterID: paramID,
+		Data:        data,
+	}, nil
+}
+
+type COM_STMT_RESET struct {
+	StatementID uint32
+}
+
+func decodeComStmtReset(packet []byte) (stmtID uint32, err error) {
+	if len(packet) != 5 || packet[0] != 0x1a {
+		return 0, fmt.Errorf("invalid COM_STMT_RESET packet")
+	}
+	stmtID = binary.LittleEndian.Uint32(packet[1:5])
+	return stmtID, nil
 }
