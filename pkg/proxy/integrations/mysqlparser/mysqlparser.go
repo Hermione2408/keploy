@@ -161,6 +161,47 @@ func encodeOutgoingMySql(clientConnId, destConnId int, requestBuffer []byte, cli
 
 	return
 }
+func decodeOutgoingMySQL(clientConnId, destConnId int, requestBuffer []byte, clientConn, destConn net.Conn, h *hooks.Hook, started time.Time, readRequestDelay time.Duration, logger *zap.Logger) {
+	startedDecoding := time.Now()
+	for {
+		configMocks := h.GetConfigMocks()
+		tcsMocks := h.GetTcsMocks()
+		var (
+			mysqlRequests = []models.MySQLRequest{}
+			err           error
+		)
+
+		if string(requestBuffer) == "read from client connection" {
+			started := time.Now()
+			requestBuffer, err = util.ReadBytes(clientConn)
+			if err != nil {
+				logger.Error("Failed to read request from the MySQL client", zap.Error(err), zap.Any("clientConnId", clientConnId))
+				return
+			}
+			readRequestDelay = time.Since(started)
+		}
+
+		if len(requestBuffer) == 0 {
+			return
+		}
+
+		logger.Debug(fmt.Sprintf("The loop starts for clientConnId: %v and the time delay: %v", clientConnId, time.Since(startedDecoding)))
+		opReq, requestHeader, mysqlRequest, err := DecodeMySQL(requestBuffer, logger)
+		if err != nil {
+			logger.Error("Failed to decode the MySQL wire message from the client", zap.Error(err), zap.Any("clientConnId", clientConnId))
+			return
+		}
+
+		mysqlRequests = append(mysqlRequests, models.MySQLRequest{
+			Header:    &requestHeader,
+			Message:   mysqlRequest,
+			ReadDelay: int64(readRequestDelay),
+		})
+
+		requestBuffer = []byte("read from client connection")
+	}
+}
+
 func ReadFirstBuffer(clientConn, destConn net.Conn) ([]byte, string, error) {
 
 	// Attempt to read from destConn first
