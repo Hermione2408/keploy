@@ -2,6 +2,7 @@ package mysqlparser
 
 import (
 	"encoding/binary"
+	"fmt"
 	"net"
 	"time"
 
@@ -82,9 +83,9 @@ func encodeOutgoingMySql(clientConnId, destConnId int, requestBuffer []byte, cli
 				logger.Error("failed to write auth switch request to client", zap.Error(err))
 				return
 			}
-			//operation, requestHeader, mysqlRequest, err := DecodeMySQLPacket(bytesToMySQLPacket(okPacket1), logger, destConn)
-			//fmt.Printf(operation, requestHeader, mysqlRequest)
-			if "operation" == "AuthSwitchRequest" {
+			operation, requestHeader, mysqlRequest, err := DecodeMySQLPacket(bytesToMySQLPacket(okPacket1), logger, destConn)
+			fmt.Printf(operation, requestHeader, mysqlRequest)
+			if operation == "AuthSwitchRequest" {
 
 				// Reading client's response to the auth switch request
 				clientResponse, err := util.ReadBytes(clientConn)
