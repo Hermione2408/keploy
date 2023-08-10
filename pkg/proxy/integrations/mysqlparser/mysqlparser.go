@@ -77,69 +77,71 @@ func encodeOutgoingMySql(clientConnId, destConnId int, requestBuffer []byte, cli
 				logger.Error("failed to read packet from server after handshake", zap.Error(err))
 				return
 			}
-			// Forwarding the auth switch request to the client
 			_, err = clientConn.Write(okPacket1)
 			if err != nil {
 				logger.Error("failed to write auth switch request to client", zap.Error(err))
 				return
 			}
+			//operation, requestHeader, mysqlRequest, err := DecodeMySQLPacket(bytesToMySQLPacket(okPacket1), logger, destConn)
+			//fmt.Printf(operation, requestHeader, mysqlRequest)
+			if "operation" == "AuthSwitchRequest" {
 
-			// Reading client's response to the auth switch request
-			clientResponse, err := util.ReadBytes(clientConn)
-			if err != nil {
-				logger.Error("failed to read response from client", zap.Error(err))
-				return
+				// Reading client's response to the auth switch request
+				clientResponse, err := util.ReadBytes(clientConn)
+				if err != nil {
+					logger.Error("failed to read response from client", zap.Error(err))
+					return
+				}
+
+				// Forwarding client's response to the server
+				_, err = destConn.Write(clientResponse)
+				if err != nil {
+					logger.Error("failed to write client's response to server", zap.Error(err))
+					return
+				}
+
+				// Reading server's final response
+				finalServerResponse, err := util.ReadBytes(destConn)
+				if err != nil {
+					logger.Error("failed to read final response from server", zap.Error(err))
+					return
+				}
+
+				_, err = clientConn.Write(finalServerResponse)
+				if err != nil {
+					logger.Error("failed to write final response to client", zap.Error(err))
+					return
+				}
+
+				// Reading encrypted authentication data from the client
+				encryptedAuthData, err := util.ReadBytes(clientConn)
+				if err != nil {
+					logger.Error("failed to read encrypted authentication data from client", zap.Error(err))
+					return
+				}
+
+				// Forwarding encrypted authentication data to the server
+				_, err = destConn.Write(encryptedAuthData)
+				if err != nil {
+					logger.Error("failed to write encrypted authentication data to server", zap.Error(err))
+					return
+				}
+
+				// Reading server's final response
+				finalServerResponse1, err := util.ReadBytes(destConn)
+				if err != nil {
+					logger.Error("failed to read final response from server", zap.Error(err))
+					return
+				}
+
+				_, err = clientConn.Write(finalServerResponse1)
+				if err != nil {
+					logger.Error("failed to write final response to client", zap.Error(err))
+					return
+				}
+				//handshake complete
+
 			}
-
-			// Forwarding client's response to the server
-			_, err = destConn.Write(clientResponse)
-			if err != nil {
-				logger.Error("failed to write client's response to server", zap.Error(err))
-				return
-			}
-
-			// Reading server's final response
-			finalServerResponse, err := util.ReadBytes(destConn)
-			if err != nil {
-				logger.Error("failed to read final response from server", zap.Error(err))
-				return
-			}
-
-			_, err = clientConn.Write(finalServerResponse)
-			if err != nil {
-				logger.Error("failed to write final response to client", zap.Error(err))
-				return
-			}
-
-			// Reading encrypted authentication data from the client
-			encryptedAuthData, err := util.ReadBytes(clientConn)
-			if err != nil {
-				logger.Error("failed to read encrypted authentication data from client", zap.Error(err))
-				return
-			}
-
-			// Forwarding encrypted authentication data to the server
-			_, err = destConn.Write(encryptedAuthData)
-			if err != nil {
-				logger.Error("failed to write encrypted authentication data to server", zap.Error(err))
-				return
-			}
-
-			// Reading server's final response
-			finalServerResponse1, err := util.ReadBytes(destConn)
-			if err != nil {
-				logger.Error("failed to read final response from server", zap.Error(err))
-				return
-			}
-
-			_, err = clientConn.Write(finalServerResponse1)
-			if err != nil {
-				logger.Error("failed to write final response to client", zap.Error(err))
-				return
-			}
-
-			//handshake complete
-
 			// After completing the handshake process, handle the client queries
 			_, err = handleClientQueries(h, nil, clientConn, destConn, logger)
 			if err != nil {

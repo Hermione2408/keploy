@@ -272,6 +272,10 @@ func DecodeMySQLPacket(packet MySQLPacket, logger *zap.Logger, destConn net.Conn
 		packetType = "MySQLErr"
 		packetData, err = decodeMySQLErr(data)
 		lastCommand = 0xFF
+	case data[0] == 0xFE && len(data) > 1: // Auth Switch Packet
+		packetType = "AuthSwitchRequest"
+		packetData, err = decodeAuthSwitchRequest(data)
+		lastCommand = 0xFE
 	case data[0] == 0xFE: // EOF packet
 		packetType = "MySQLEOF"
 		packetData, err = decodeMYSQLEOF(data)
@@ -291,6 +295,23 @@ func DecodeMySQLPacket(packet MySQLPacket, logger *zap.Logger, destConn net.Conn
 	}
 
 	return packetType, header, packetData, nil
+}
+func decodeAuthSwitchRequest(data []byte) (*AuthSwitchRequest, error) {
+	if len(data) < 2 {
+		return nil, errors.New("invalid auth switch request packet")
+	}
+
+	pluginName, _, err := nullTerminatedString(data[1:])
+	if err != nil {
+		return nil, err
+	}
+
+	authSwitchData := data[len(pluginName)+2:]
+
+	return &AuthSwitchRequest{
+		PluginName: pluginName,
+		Data:       authSwitchData,
+	}, nil
 }
 
 func decodeComStmtPrepare(data []byte) (string, error) {
@@ -335,8 +356,21 @@ func decodeComStmtPrepareOk(data []byte) (*StmtPrepareOk, error) {
 	return response, nil
 }
 
+type AuthSwitchRequest struct {
+	PluginName string
+	Data       []byte
+}
+
 type RowDataPacket struct {
 	Data []byte
+}
+
+func nullTerminatedString(data []byte) (string, int, error) {
+	pos := bytes.IndexByte(data, 0)
+	if pos == -1 {
+		return "", 0, errors.New("null-terminated string not found")
+	}
+	return string(data[:pos]), pos, nil
 }
 
 func readLengthEncodedInteger(b []byte) (uint64, bool, int) {
