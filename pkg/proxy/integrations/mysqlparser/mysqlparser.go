@@ -88,7 +88,7 @@ func encodeOutgoingMySql(clientConnId, destConnId int, requestBuffer []byte, cli
 			}
 			operationToCheck, _, _, _ := DecodeMySQLPacket(bytesToMySQLPacket(okPacket1), logger, destConn)
 			_, requestHeader, mysqlRequest, err := DecodeMySQLPacket(bytesToMySQLPacket(handshakeResponseBuffer), logger, destConn)
-			mysqlRequests = append(mysqlRequests, models.MySQLRequest{
+			mysqlRequests = append([]models.MySQLRequest{}, models.MySQLRequest{
 				Header: &models.MySQLPacketHeader{
 					PacketLength: requestHeader.PayloadLength,
 					PacketNumber: requestHeader.SequenceID,
@@ -157,7 +157,7 @@ func encodeOutgoingMySql(clientConnId, destConnId int, requestBuffer []byte, cli
 					logger.Error("Failed to decode the handshake response from the destination server", zap.Error(err))
 					continue
 				}
-				mysqlResponses = append(mysqlResponses, models.MySQLResponse{
+				mysqlResponses = append([]models.MySQLResponse{}, models.MySQLResponse{
 					Header: &models.MySQLPacketHeader{
 						PacketLength: responseHeader.PayloadLength,
 						PacketNumber: responseHeader.SequenceID,
@@ -171,7 +171,7 @@ func encodeOutgoingMySql(clientConnId, destConnId int, requestBuffer []byte, cli
 					logger.Error("Failed to decode the handshake response from the destination server", zap.Error(err))
 					continue
 				}
-				mysqlResponses = append(mysqlResponses, models.MySQLResponse{
+				mysqlResponses = append([]models.MySQLResponse{}, models.MySQLResponse{
 					Header: &models.MySQLPacketHeader{
 						PacketLength: responseHeader.PayloadLength,
 						PacketNumber: responseHeader.SequenceID,
@@ -291,7 +291,7 @@ func handleClientQueries(h *hooks.Hook, initialBuffer []byte, clientConn, destCo
 			break
 		}
 
-		mysqlRequests = append(mysqlRequests, models.MySQLRequest{
+		mysqlRequests = append([]models.MySQLRequest{}, models.MySQLRequest{
 			Header: &models.MySQLPacketHeader{
 				PacketLength: requestHeader.PayloadLength,
 				PacketNumber: requestHeader.SequenceID,
@@ -325,7 +325,7 @@ func handleClientQueries(h *hooks.Hook, initialBuffer []byte, clientConn, destCo
 			logger.Error("Failed to decode the MySQL packet from the destination server", zap.Error(err))
 			continue
 		}
-		mysqlResponses = append(mysqlResponses, models.MySQLResponse{
+		mysqlResponses = append([]models.MySQLResponse{}, models.MySQLResponse{
 			Header: &models.MySQLPacketHeader{
 				PacketLength: responseHeader.PayloadLength,
 				PacketNumber: responseHeader.SequenceID,
