@@ -33,10 +33,25 @@ type HandshakeV10Packet struct {
 	AuthPluginName  string
 }
 
+type HandshakeResponse struct {
+	PacketIndicator string
+	PluginDetails   struct {
+		Type    string
+		Message string
+	}
+}
+
 type QueryPacket struct {
 	Command byte
 	Query   string
 }
+
+const (
+	iAuthMoreData                                byte = 0x01
+	cachingSha2PasswordRequestPublicKey               = 2
+	cachingSha2PasswordFastAuthSuccess                = 3
+	cachingSha2PasswordPerformFullAuthentication      = 4
+)
 
 type EOFPacket struct {
 	Header      byte
@@ -120,6 +135,8 @@ func decodePacketType2(data []byte) (*PacketType2, error) {
 		Field3: data[2],
 	}, nil
 }
+
+var handshakePluginName string
 
 func NewHandshakeResponsePacket(handshake *HandshakeV10Packet, authMethod string, password string) *HandshakeResponse41 {
 	authResponse := GenerateAuthResponse(password, handshake.AuthPluginData)
@@ -221,7 +238,7 @@ func DecodeMySQLPacket(packet MySQLPacket, logger *zap.Logger, destConn net.Conn
 	var packetData interface{}
 	var packetType string
 	var err error
-
+	//var plugin string
 	switch {
 	case data[0] == 0x0e: // COM_PING
 		packetType = "COM_PING"
@@ -254,6 +271,8 @@ func DecodeMySQLPacket(packet MySQLPacket, logger *zap.Logger, destConn net.Conn
 	case data[0] == 0x0A: // MySQLHandshakeV10
 		packetType = "MySQLHandshakeV10"
 		packetData, err = decodeMySQLHandshakeV10(data)
+		handshakePacket, _ := packetData.(*HandshakeV10Packet)
+		handshakePluginName = handshakePacket.AuthPluginName
 		lastCommand = 0x0A
 	case data[0] == 0x03: // MySQLQuery
 		packetType = "MySQLQuery"
@@ -292,6 +311,9 @@ func DecodeMySQLPacket(packet MySQLPacket, logger *zap.Logger, destConn net.Conn
 		packetType = "COM_STMT_RESET"
 		packetData, err = decodeComStmtReset(data)
 		lastCommand = 0x1a
+	case data[0] == 0x01: // Handshake Response packet
+		packetType = "HANDSHAKE_RESPONSE"
+		packetData, err = decodeHandshakeResponse(data)
 	default:
 		packetType = "Unknown"
 		packetData = data
@@ -968,6 +990,52 @@ func decodeMySQLPacketHeader(data []byte) (MySQLPacketHeader, error) {
 
 	return MySQLPacketHeader{PayloadLength: length, SequenceID: sequenceID}, nil
 }
+func decodeHandshakeResponse(data []byte) (*HandshakeResponse, error) {
+	var (
+		packetIndicator string
+		authType        string
+		message         string
+	)
+	fmt.Println(data, handshakePluginName)
+	switch data[0] {
+	case iOK:
+		packetIndicator = "OK"
+	case iAuthMoreData:
+		packetIndicator = "AuthMoreData"
+	case iEOF:
+		packetIndicator = "EOF"
+	default:
+		packetIndicator = "Unknows"
+	}
+	if data[0] == iAuthMoreData {
+		count := int(data[0])
+		var authData = data[1 : count+1]
+		switch handshakePluginName {
+		case "caching_sha2_password":
+			switch len(authData) {
+			case 1:
+				switch authData[0] {
+				case cachingSha2PasswordFastAuthSuccess:
+					authType = "cachingSha2PasswordFastAuthSuccess"
+					message = "Ok"
+				case cachingSha2PasswordPerformFullAuthentication:
+					authType = "cachingSha2PasswordPerformFullAuthentication"
+					message = ""
+				}
+			}
+		}
+	}
+	return &HandshakeResponse{
+		PacketIndicator: packetIndicator,
+		PluginDetails: struct {
+			Type    string
+			Message string
+		}{
+			Type:    authType,
+			Message: message,
+		},
+	}, nil
+}
 
 func decodeMySQLHandshakeV10(data []byte) (*HandshakeV10Packet, error) {
 	if len(data) < 4 {
@@ -990,11 +1058,8 @@ func decodeMySQLHandshakeV10(data []byte) (*HandshakeV10Packet, error) {
 	packet.AuthPluginData = data[:8]
 	data = data[8:]
 
-	data = data[1:]
+	data = data[1:] // Filler
 
-	if len(data) < 4 {
-		return nil, fmt.Errorf("handshake packet too short")
-	}
 	packet.CapabilityFlags = binary.LittleEndian.Uint32(data)
 	data = data[4:]
 
@@ -1004,15 +1069,18 @@ func decodeMySQLHandshakeV10(data []byte) (*HandshakeV10Packet, error) {
 	packet.StatusFlags = binary.LittleEndian.Uint16(data)
 	data = data[2:]
 
-	authPluginDataLen := int(data[0])
-	data = data[1:]
+	if packet.CapabilityFlags&0x800000 != 0 {
+		authPluginDataLen := int(data[0])
+		if authPluginDataLen > 8 {
+			data = data[1:]
+			packet.AuthPluginData = append(packet.AuthPluginData, data[:authPluginDataLen-8]...)
+			data = data[authPluginDataLen-8:]
+		} else {
+			data = data[1:]
+		}
+	}
 
-	data = data[10:]
-
-	packet.AuthPluginData = append(packet.AuthPluginData, data[:authPluginDataLen-8]...)
-	data = data[authPluginDataLen-8:]
-
-	data = data[1:]
+	data = data[10:] // Reserved 10 bytes
 
 	idx = bytes.IndexByte(data, 0x00)
 	if idx == -1 {
@@ -1022,6 +1090,7 @@ func decodeMySQLHandshakeV10(data []byte) (*HandshakeV10Packet, error) {
 
 	return packet, nil
 }
+
 func (packet *HandshakeV10Packet) ShouldUseSSL() bool {
 	return (packet.CapabilityFlags & CLIENT_SSL) != 0
 }
