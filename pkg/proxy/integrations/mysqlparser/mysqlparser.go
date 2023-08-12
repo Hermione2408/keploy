@@ -182,18 +182,11 @@ func encodeOutgoingMySql(clientConnId, destConnId int, requestBuffer []byte, cli
 			}
 			recordMySQLMessage(h, mysqlRequests, mysqlResponses, "HandshakeRequest", "HandshakeResponse", "config")
 
-			_, err = handleClientQueries(h, nil, clientConn, destConn, logger)
-			if err != nil {
-				logger.Error("failed to handle client queries", zap.Error(err))
-				return
-			}
+			handleClientQueries(h, nil, clientConn, destConn, logger)
+
 		} else if source == "client" {
 			// queryBuffer := data
-			_, err = handleClientQueries(h, nil, clientConn, destConn, logger)
-			if err != nil {
-				logger.Error("failed to handle client queries", zap.Error(err))
-				return
-			}
+			handleClientQueries(h, nil, clientConn, destConn, logger)
 		}
 	}
 
