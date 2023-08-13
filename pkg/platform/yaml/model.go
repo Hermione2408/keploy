@@ -2,6 +2,7 @@ package yaml
 
 import (
 	"errors"
+	"fmt"
 
 	"go.keploy.io/server/pkg/models"
 	"go.keploy.io/server/pkg/platform/yaml/spec"
@@ -260,6 +261,19 @@ func decodeMocks(yamlMocks []*NetworkTrafficDoc, logger *zap.Logger) ([]*models.
 			// 	MongoResponseHeader: &mongoSpec.ResponseHeader,
 			// 	// MongoRequest: ,
 			// }
+		case models.SQL:
+			mysqlSpec := spec.MySQLSpec{}
+			err := m.Spec.Decode(&mysqlSpec)
+			if err != nil {
+				logger.Error(Emoji+"failed to unmarshal a yaml doc into mongo mock", zap.Error(err), zap.Any("mock name", m.Name))
+				return nil, err
+			}
+
+			mockSpec, err := decodeMySqlMessage(&mysqlSpec, logger)
+			if err != nil {
+				return nil, err
+			}
+			mock.Spec = *mockSpec
 		case models.GENERIC:
 			genericSpec := spec.GenericSpec{}
 			err := m.Spec.Decode(&genericSpec)
@@ -281,6 +295,24 @@ func decodeMocks(yamlMocks []*NetworkTrafficDoc, logger *zap.Logger) ([]*models.
 	return mocks, nil
 }
 
+func decodeMySqlMessage(yamlSpec *spec.MySQLSpec, logger *zap.Logger) (*models.MockSpec, error) {
+	mockSpec := models.MockSpec{
+		Metadata: yamlSpec.Metadata,
+		Created:  yamlSpec.CreatedAt,
+	}
+	requests := []models.MySQLRequest{}
+	for _, v := range yamlSpec.Requests {
+		req := models.MySQLRequest{
+			Header:    v.Header,
+			Message:   v.Message,
+			ReadDelay: v.ReadDelay,
+		}
+		fmt.Println(req, requests, mockSpec)
+	}
+	return &models.MockSpec{
+		Created: 12244,
+	}, nil
+}
 func decodeMongoMessage(yamlSpec *spec.MongoSpec, logger *zap.Logger) (*models.MockSpec, error) {
 	mockSpec := models.MockSpec{
 		Metadata: yamlSpec.Metadata,
