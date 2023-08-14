@@ -93,6 +93,7 @@ func encodeOutgoingMySql(clientConnId, destConnId int, requestBuffer []byte, cli
 				Header: &models.MySQLPacketHeader{
 					PacketLength: requestHeader.PayloadLength,
 					PacketNumber: requestHeader.SequenceID,
+					PacketType:   opr,
 				},
 				Message: mysqlRequest,
 			})
@@ -172,6 +173,7 @@ func encodeOutgoingMySql(clientConnId, destConnId int, requestBuffer []byte, cli
 					Header: &models.MySQLPacketHeader{
 						PacketLength: responseHeader.PayloadLength,
 						PacketNumber: responseHeader.SequenceID,
+						PacketType:   oprResponse,
 					},
 					Message: mysqlResp,
 				})
@@ -252,6 +254,7 @@ func handleClientQueries(h *hooks.Hook, initialBuffer []byte, clientConn, destCo
 			Header: &models.MySQLPacketHeader{
 				PacketLength: requestHeader.PayloadLength,
 				PacketNumber: requestHeader.SequenceID,
+				PacketType:   operation,
 			},
 			Message: mysqlRequest,
 		})
@@ -286,6 +289,7 @@ func handleClientQueries(h *hooks.Hook, initialBuffer []byte, clientConn, destCo
 			Header: &models.MySQLPacketHeader{
 				PacketLength: responseHeader.PayloadLength,
 				PacketNumber: responseHeader.SequenceID,
+				PacketType:   responseOperation,
 			},
 			Message: mysqlResp,
 		})
