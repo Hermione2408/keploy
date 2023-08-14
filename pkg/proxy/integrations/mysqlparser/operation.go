@@ -101,9 +101,8 @@ type RowDataPacket struct {
 }
 
 type ResultSet struct {
-	ColumnCount       int                `yaml:"column_count"`
-	ColumnDefinitions []ColumnDefinition `yaml:"column_definitions"`
-	Rows              [][]string         `yaml:"rows"`
+	Columns []*ColumnDefinitionPacket `yaml:"columns"`
+	Rows    []*Row                    `yaml:"rows"`
 }
 
 type ColumnValue struct {
@@ -947,12 +946,12 @@ func parseResultSet(b []byte) (interface{}, error) {
 			allRows = append(allRows, row)
 		}
 	}
-	packetData := map[string]interface{}{
-		"Columns": allColumns,
-		"Rows":    allRows,
+	resultSet := &ResultSet{
+		Columns: allColumns,
+		Rows:    allRows,
 	}
 
-	return packetData, err
+	return resultSet, err
 }
 
 func parseColumnDefinitionPacket(b []byte) (*ColumnDefinitionPacket, []byte, error) {
