@@ -18,32 +18,227 @@ import (
 )
 
 type MySQLPacketHeader struct {
-	PayloadLength uint32 // MySQL packet payload length
-	SequenceID    uint8  // MySQL packet sequence ID
+	PayloadLength uint32 `yaml:"payload_length"` // MySQL packet payload length
+	SequenceID    uint8  `yaml:"sequence_id"`    // MySQL packet sequence ID
 }
 
 type HandshakeV10Packet struct {
-	ProtocolVersion uint8
-	ServerVersion   string
-	ConnectionID    uint32
-	AuthPluginData  []byte
-	CapabilityFlags uint32
-	CharacterSet    uint8
-	StatusFlags     uint16
-	AuthPluginName  string
-}
-
-type HandshakeResponse struct {
-	PacketIndicator string
-	PluginDetails   struct {
-		Type    string
-		Message string
-	}
+	ProtocolVersion uint8  `yaml:"protocol_version"`
+	ServerVersion   string `yaml:"server_version"`
+	ConnectionID    uint32 `yaml:"connection_id"`
+	AuthPluginData  []byte `yaml:"auth_plugin_data"`
+	CapabilityFlags uint32 `yaml:"capability_flags"`
+	CharacterSet    uint8  `yaml:"character_set"`
+	StatusFlags     uint16 `yaml:"status_flags"`
+	AuthPluginName  string `yaml:"auth_plugin_name"`
 }
 
 type QueryPacket struct {
-	Command byte
-	Query   string
+	Command byte   `yaml:"command"`
+	Query   string `yaml:"query"`
+}
+
+type EOFPacket struct {
+	Header      byte   `yaml:"header"`
+	Warnings    uint16 `yaml:"warnings"`
+	StatusFlags uint16 `yaml:"status_flags"`
+}
+
+type ERRPacket struct {
+	Header         byte   `yaml:"header"`
+	ErrorCode      uint16 `yaml:"error_code"`
+	SQLStateMarker string `yaml:"sql_state_marker"`
+	SQLState       string `yaml:"sql_state"`
+	ErrorMessage   string `yaml:"error_message"`
+}
+
+type MySQLPacket struct {
+	Header  MySQLPacketHeader `yaml:"header"`
+	Payload []byte            `yaml:"payload"`
+}
+
+type HandshakeResponse41 struct {
+	CapabilityFlags   CapabilityFlags   `yaml:"capability_flags"`
+	MaxPacketSize     uint32            `yaml:"max_packet_size"`
+	CharacterSet      uint8             `yaml:"character_set"`
+	Reserved          [23]byte          `yaml:"reserved"`
+	Username          string            `yaml:"username"`
+	LengthEncodedInt  uint8             `yaml:"length_encoded_int"`
+	AuthResponse      []byte            `yaml:"auth_response"`
+	Database          string            `yaml:"database"`
+	AuthPluginName    string            `yaml:"auth_plugin_name"`
+	ConnectAttributes map[string]string `yaml:"connect_attributes"`
+}
+
+type PacketType2 struct {
+	Field1 byte `yaml:"field1"`
+	Field2 byte `yaml:"field2"`
+	Field3 byte `yaml:"field3"`
+}
+
+type SSLRequestPacket struct {
+	Capabilities  uint32   `yaml:"capabilities"`
+	MaxPacketSize uint32   `yaml:"max_packet_size"`
+	CharacterSet  uint8    `yaml:"character_set"`
+	Reserved      [23]byte `yaml:"reserved"`
+}
+
+type StmtPrepareOk struct {
+	Status       byte   `yaml:"status"`
+	StatementID  uint32 `yaml:"statement_id"`
+	NumColumns   uint16 `yaml:"num_columns"`
+	NumParams    uint16 `yaml:"num_params"`
+	WarningCount uint16 `yaml:"warning_count"`
+}
+
+type AuthSwitchRequest struct {
+	PluginName string `yaml:"plugin_name"`
+	Data       []byte `yaml:"data"`
+}
+
+type RowDataPacket struct {
+	Data []byte `yaml:"data"`
+}
+
+type ResultSet struct {
+	ColumnCount       int                `yaml:"column_count"`
+	ColumnDefinitions []ColumnDefinition `yaml:"column_definitions"`
+	Rows              [][]string         `yaml:"rows"`
+}
+
+type ColumnValue struct {
+	Null  bool   `yaml:"null"`
+	Value string `yaml:"value"`
+}
+
+type ColumnDefinition struct {
+	Catalog      string `yaml:"catalog"`
+	Schema       string `yaml:"schema"`
+	Table        string `yaml:"table"`
+	OrgTable     string `yaml:"org_table"`
+	Name         string `yaml:"name"`
+	OrgName      string `yaml:"org_name"`
+	Charset      uint16 `yaml:"charset"`
+	ColumnLength uint32 `yaml:"column_length"`
+	Type         byte   `yaml:"type"`
+	Flags        uint16 `yaml:"flags"`
+	Decimals     byte   `yaml:"decimals"`
+}
+
+type packetDecoder struct {
+	conn net.Conn `yaml:"conn"`
+}
+
+type binaryRows struct {
+	pd      *packetDecoder `yaml:"pd"`
+	rs      resultSet      `yaml:"rs"`
+	mc      mysqlConn      `yaml:"mc"`
+	data    []byte         `yaml:"data"`
+	columns []mysqlField   `yaml:"columns"`
+}
+
+type resultSet struct {
+	columns []column `yaml:"columns"`
+	done    bool     `yaml:"done"`
+}
+
+type column struct {
+	fieldType int `yaml:"field_type"`
+	flags     int `yaml:"flags"`
+	decimals  int `yaml:"decimals"`
+}
+
+type mysqlConn struct {
+	status uint16 `yaml:"status"`
+	cfg    config `yaml:"cfg"`
+}
+
+type config struct {
+	Loc int `yaml:"loc"`
+}
+
+type mysqlField struct {
+	tableName string    `yaml:"table_name"`
+	name      string    `yaml:"name"`
+	length    uint32    `yaml:"length"`
+	flags     fieldFlag `yaml:"flags"`
+	fieldType fieldType `yaml:"field_type"`
+	decimals  byte      `yaml:"decimals"`
+	charSet   uint8     `yaml:"char_set"`
+}
+
+type Row struct {
+	Columns map[string]interface{} `yaml:"columns"`
+}
+
+type ColumnDefinitionPacket struct {
+	Catalog      string `yaml:"catalog"`
+	Schema       string `yaml:"schema"`
+	Table        string `yaml:"table"`
+	OrgTable     string `yaml:"org_table"`
+	Name         string `yaml:"name"`
+	OrgName      string `yaml:"org_name"`
+	CharacterSet uint16 `yaml:"character_set"`
+	ColumnLength uint32 `yaml:"column_length"`
+	ColumnType   string `yaml:"column_type"`
+	Flags        uint16 `yaml:"flags"`
+	Decimals     uint8  `yaml:"decimals"`
+	Filler       uint16 `yaml:"filler"`
+	DefaultValue string `yaml:"default_value"`
+}
+
+type ResultsetRowPacket struct {
+	ColumnValues []string `yaml:"column_values"`
+	RowValues    []string `yaml:"row_values"`
+}
+
+type ComStmtFetchPacket struct {
+	StatementID uint32 `yaml:"statement_id"`
+	RowCount    uint32 `yaml:"row_count"`
+	Info        string `yaml:"info"`
+}
+
+type ComStmtExecute struct {
+	StatementID    uint32           `yaml:"statement_id"`
+	Flags          byte             `yaml:"flags"`
+	IterationCount uint32           `yaml:"iteration_count"`
+	NullBitmap     []byte           `yaml:"null_bitmap"`
+	ParamCount     uint16           `yaml:"param_count"`
+	Parameters     []BoundParameter `yaml:"parameters"`
+}
+
+type BoundParameter struct {
+	Type     byte   `yaml:"type"`
+	Unsigned byte   `yaml:"unsigned"`
+	Value    []byte `yaml:"value"`
+}
+
+type ComChangeUserPacket struct {
+	User         string `yaml:"user"`
+	Auth         []byte `yaml:"auth"`
+	Db           string `yaml:"db"`
+	CharacterSet uint8  `yaml:"character_set"`
+	AuthPlugin   string `yaml:"auth_plugin"`
+}
+
+type COM_STMT_SEND_LONG_DATA struct {
+	StatementID uint32 `yaml:"statement_id"`
+	ParameterID uint16 `yaml:"parameter_id"`
+	Data        []byte `yaml:"data"`
+}
+
+type COM_STMT_RESET struct {
+	StatementID uint32 `yaml:"statement_id"`
+}
+
+type PluginDetails struct {
+	Type    string `yaml:"type"`
+	Message string `yaml:"message"`
+}
+
+type HandshakeResponse struct {
+	PacketIndicator string        `yaml:"packet_indicator"`
+	PluginDetails   PluginDetails `yaml:"plugin_details"`
 }
 
 const (
@@ -52,25 +247,6 @@ const (
 	cachingSha2PasswordFastAuthSuccess                = 3
 	cachingSha2PasswordPerformFullAuthentication      = 4
 )
-
-type EOFPacket struct {
-	Header      byte
-	Warnings    uint16
-	StatusFlags uint16
-}
-
-type ERRPacket struct {
-	Header         byte
-	ErrorCode      uint16
-	SQLStateMarker string
-	SQLState       string
-	ErrorMessage   string
-}
-
-type MySQLPacket struct {
-	Header  MySQLPacketHeader
-	Payload []byte
-}
 
 const (
 	MaxPacketSize = 1<<24 - 1
@@ -105,24 +281,6 @@ const (
 	CLIENT_SESSION_TRACK
 	CLIENT_DEPRECATE_EOF
 )
-
-type HandshakeResponse41 struct {
-	CapabilityFlags   CapabilityFlags
-	MaxPacketSize     uint32
-	CharacterSet      uint8
-	Reserved          [23]byte
-	Username          string
-	LengthEncodedInt  uint8
-	AuthResponse      []byte
-	Database          string
-	AuthPluginName    string
-	ConnectAttributes map[string]string
-}
-type PacketType2 struct {
-	Field1 byte
-	Field2 byte
-	Field3 byte
-}
 
 func decodePacketType2(data []byte) (*PacketType2, error) {
 	if len(data) < 3 {
@@ -186,13 +344,6 @@ func (p *HandshakeResponse41) EncodeHandshake() ([]byte, error) {
 	return buffer, nil
 }
 
-type SSLRequestPacket struct {
-	Capabilities  uint32
-	MaxPacketSize uint32
-	CharacterSet  uint8
-	Reserved      [23]byte
-}
-
 func NewSSLRequestPacket(capabilities uint32, maxPacketSize uint32, characterSet uint8) *SSLRequestPacket {
 	// Ensure the SSL capability flag is set
 	capabilities |= CLIENT_SSL
@@ -238,7 +389,7 @@ func DecodeMySQLPacket(packet MySQLPacket, logger *zap.Logger, destConn net.Conn
 	var packetData interface{}
 	var packetType string
 	var err error
-	//var plugin string
+
 	switch {
 	case data[0] == 0x0e: // COM_PING
 		packetType = "COM_PING"
@@ -361,14 +512,6 @@ func decodeComStmtClose(data []byte) (uint32, error) {
 	return statementID, nil
 }
 
-type StmtPrepareOk struct {
-	Status       byte
-	StatementID  uint32
-	NumColumns   uint16
-	NumParams    uint16
-	WarningCount uint16
-}
-
 func decodeComStmtPrepareOk(data []byte) (*StmtPrepareOk, error) {
 	// ensure the packet is long enough
 	if len(data) < 12 {
@@ -384,15 +527,6 @@ func decodeComStmtPrepareOk(data []byte) (*StmtPrepareOk, error) {
 		WarningCount: binary.LittleEndian.Uint16(data[10:12]),
 	}
 	return response, nil
-}
-
-type AuthSwitchRequest struct {
-	PluginName string
-	Data       []byte
-}
-
-type RowDataPacket struct {
-	Data []byte
 }
 
 func nullTerminatedString(data []byte) (string, int, error) {
@@ -546,12 +680,6 @@ type OKPacket struct {
 	Info         string `json:"info,omitempty" yaml:"info"`
 }
 
-type ResultSet struct {
-	ColumnCount       int
-	ColumnDefinitions []ColumnDefinition
-	Rows              [][]string
-}
-
 func decodeOKPacket(data []byte) (OKPacket, []byte, error) {
 	var okPacket OKPacket
 	if data[0] != 0xfe {
@@ -592,24 +720,6 @@ const (
 )
 
 // ColumnValue represents a value from a column in a result set
-type ColumnValue struct {
-	Null  bool
-	Value string
-}
-
-type ColumnDefinition struct {
-	Catalog      string
-	Schema       string
-	Table        string
-	OrgTable     string
-	Name         string
-	OrgName      string
-	Charset      uint16
-	ColumnLength uint32
-	Type         byte
-	Flags        uint16
-	Decimals     byte
-}
 
 const (
 	iOK               = 0x00
@@ -619,37 +729,6 @@ const (
 	flagUnsigned
 	statusMoreResultsExists
 )
-
-type packetDecoder struct {
-	conn net.Conn
-}
-type binaryRows struct {
-	pd      *packetDecoder
-	rs      resultSet
-	mc      mysqlConn
-	data    []byte
-	columns []mysqlField
-}
-
-type resultSet struct {
-	columns []column
-	done    bool
-}
-
-type column struct {
-	fieldType int
-	flags     int
-	decimals  int
-}
-
-type mysqlConn struct {
-	status uint16
-	cfg    config
-}
-
-type config struct {
-	Loc int
-}
 
 func handleOkPacket(data []byte) error {
 	// OK packets start with 0x00
@@ -696,15 +775,6 @@ func readLengthEncodedStrings(b []byte) (string, int) {
 }
 
 type fieldFlag uint16
-type mysqlField struct {
-	tableName string
-	name      string
-	length    uint32
-	flags     fieldFlag
-	fieldType fieldType
-	decimals  byte
-	charSet   uint8
-}
 
 const (
 	TypeDecimal    byte = 0x00
@@ -739,10 +809,6 @@ const (
 func parseTimestamp(b []byte) (time.Time, int) {
 	timestamp := binary.LittleEndian.Uint64(b)
 	return time.Unix(int64(timestamp), 0), 8 // assuming the timestamp is 8 bytes
-}
-
-type Row struct {
-	Columns map[string]interface{}
 }
 
 func ReadLengthEncodedString(b []byte) (string, int) {
@@ -889,27 +955,6 @@ func parseResultSet(b []byte) (interface{}, error) {
 	return packetData, err
 }
 
-type ColumnDefinitionPacket struct {
-	Catalog      string
-	Schema       string
-	Table        string
-	OrgTable     string
-	Name         string
-	OrgName      string
-	CharacterSet uint16
-	ColumnLength uint32
-	ColumnType   string
-	Flags        uint16
-	Decimals     uint8
-	Filler       uint16
-	DefaultValue string
-}
-
-type ResultsetRowPacket struct {
-	ColumnValues []string
-	RowValues    []string
-}
-
 func parseColumnDefinitionPacket(b []byte) (*ColumnDefinitionPacket, []byte, error) {
 	packet := &ColumnDefinitionPacket{}
 	var n int
@@ -1027,10 +1072,7 @@ func decodeHandshakeResponse(data []byte) (*HandshakeResponse, error) {
 	}
 	return &HandshakeResponse{
 		PacketIndicator: packetIndicator,
-		PluginDetails: struct {
-			Type    string
-			Message string
-		}{
+		PluginDetails: PluginDetails{
 			Type:    authType,
 			Message: message,
 		},
@@ -1060,6 +1102,9 @@ func decodeMySQLHandshakeV10(data []byte) (*HandshakeV10Packet, error) {
 
 	data = data[1:] // Filler
 
+	if len(data) < 4 {
+		return nil, fmt.Errorf("handshake packet too short")
+	}
 	packet.CapabilityFlags = binary.LittleEndian.Uint32(data)
 	data = data[4:]
 
@@ -1272,12 +1317,6 @@ func decodeMYSQLEOF(data []byte) (*EOFPacket, error) {
 	return packet, nil
 }
 
-type ComStmtFetchPacket struct {
-	StatementID uint32
-	RowCount    uint32
-	Info        string
-}
-
 func decodeComStmtFetch(data []byte) (ComStmtFetchPacket, error) {
 	if len(data) < 9 {
 		return ComStmtFetchPacket{}, errors.New("Data too short for COM_STMT_FETCH")
@@ -1295,21 +1334,6 @@ func decodeComStmtFetch(data []byte) (ComStmtFetchPacket, error) {
 		RowCount:    rowCount,
 		Info:        info,
 	}, nil
-}
-
-type ComStmtExecute struct {
-	StatementID    uint32
-	Flags          byte
-	IterationCount uint32
-	NullBitmap     []byte
-	ParamCount     uint16
-	Parameters     []BoundParameter
-}
-
-type BoundParameter struct {
-	Type     byte
-	Unsigned byte
-	Value    []byte
 }
 
 func decodeComStmtExecute(packet []byte) (ComStmtExecute, error) {
@@ -1349,14 +1373,6 @@ func decodeComStmtExecute(packet []byte) (ComStmtExecute, error) {
 	return stmtExecute, nil
 }
 
-type ComChangeUserPacket struct {
-	User         string
-	Auth         []byte
-	Db           string
-	CharacterSet uint8
-	AuthPlugin   string
-}
-
 func decodeComChangeUser(data []byte) (ComChangeUserPacket, error) {
 	if len(data) < 2 {
 		return ComChangeUserPacket{}, errors.New("Data too short for COM_CHANGE_USER")
@@ -1394,12 +1410,6 @@ func decodeComPing(data []byte) (ComPingPacket, error) {
 	return ComPingPacket{}, nil
 }
 
-type COM_STMT_SEND_LONG_DATA struct {
-	StatementID uint32
-	ParameterID uint16
-	Data        []byte
-}
-
 // No response is sent back to client in this packet
 func decodeComStmtSendLongData(packet []byte) (COM_STMT_SEND_LONG_DATA, error) {
 	if len(packet) < 7 || packet[0] != 0x18 {
@@ -1413,10 +1423,6 @@ func decodeComStmtSendLongData(packet []byte) (COM_STMT_SEND_LONG_DATA, error) {
 		ParameterID: paramID,
 		Data:        data,
 	}, nil
-}
-
-type COM_STMT_RESET struct {
-	StatementID uint32
 }
 
 func decodeComStmtReset(packet []byte) (stmtID uint32, err error) {
