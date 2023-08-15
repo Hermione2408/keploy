@@ -325,10 +325,10 @@ func decodeMySqlMessage(yamlSpec *spec.MySQLSpec, logger *zap.Logger) (*models.M
 			}
 			req.Message = requestMessage
 		case "COM_STMT_PREPARE":
-			requestMessage := &models.MySQLHandshakeV10Packet{}
+			requestMessage := &models.MySQLComStmtPreparePacket{}
 			err := v.Message.Decode(requestMessage)
 			if err != nil {
-				logger.Error(Emoji+"failed to unmarshal yml document into MySQLHandshakeV10Packet", zap.Error(err))
+				logger.Error(Emoji+"failed to unmarshal yml document into MySQLComStmtPreparePacket", zap.Error(err))
 				// return fmt.Errorf("failed to decode the mongo OpReply of mock with name: %s.  error: %s", doc.Name, err.Error())
 				return nil, err
 			}
@@ -341,7 +341,51 @@ func decodeMySqlMessage(yamlSpec *spec.MySQLSpec, logger *zap.Logger) (*models.M
 				return nil, err
 			}
 			req.Message = requestMessage
-
+		case "COM_STMT_SEND_LONG_DATA":
+			requestMessage := &models.MySQLCOM_STMT_SEND_LONG_DATA{}
+			err := v.Message.Decode(requestMessage)
+			if err != nil {
+				logger.Error(Emoji+"failed to unmarshal yml document into MySQLCOM_STMT_SEND_LONG_DATA", zap.Error(err))
+				// return fmt.Errorf("failed to decode the mongo OpReply of mock with name: %s.  error: %s", doc.Name, err.Error())
+				return nil, err
+			}
+			req.Message = requestMessage
+		case "COM_STMT_RESET":
+			requestMessage := &models.MySQLCOM_STMT_RESET{}
+			err := v.Message.Decode(requestMessage)
+			if err != nil {
+				logger.Error(Emoji+"failed to unmarshal yml document into MySQLCOM_STMT_RESET", zap.Error(err))
+				// return fmt.Errorf("failed to decode the mongo OpReply of mock with name: %s.  error: %s", doc.Name, err.Error())
+				return nil, err
+			}
+			req.Message = requestMessage
+		case "COM_STMT_FETCH":
+			requestMessage := &models.MySQLComStmtFetchPacket{}
+			err := v.Message.Decode(requestMessage)
+			if err != nil {
+				logger.Error(Emoji+"failed to unmarshal yml document into MySQLComStmtFetchPacket", zap.Error(err))
+				// return fmt.Errorf("failed to decode the mongo OpReply of mock with name: %s.  error: %s", doc.Name, err.Error())
+				return nil, err
+			}
+			req.Message = requestMessage
+		case "COM_STMT_CLOSE":
+			requestMessage := &models.MySQLCOM_STMT_SEND_LONG_DATA{}
+			err := v.Message.Decode(requestMessage)
+			if err != nil {
+				logger.Error(Emoji+"failed to unmarshal yml document into COM_STMT_CLOSE", zap.Error(err))
+				// return fmt.Errorf("failed to decode the mongo OpReply of mock with name: %s.  error: %s", doc.Name, err.Error())
+				return nil, err
+			}
+			req.Message = requestMessage
+		case "COM_CHANGE_USER":
+			requestMessage := &models.MySQLComChangeUserPacket{}
+			err := v.Message.Decode(requestMessage)
+			if err != nil {
+				logger.Error(Emoji+"failed to unmarshal yml document into MySQLComChangeUserPacket", zap.Error(err))
+				// return fmt.Errorf("failed to decode the mongo OpReply of mock with name: %s.  error: %s", doc.Name, err.Error())
+				return nil, err
+			}
+			req.Message = requestMessage
 		}
 		requests = append(requests, req)
 

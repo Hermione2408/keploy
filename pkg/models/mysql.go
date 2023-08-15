@@ -102,3 +102,31 @@ type MySQLERRPacket struct {
 	SQLState       string `yaml:"sql_state"`
 	ErrorMessage   string `yaml:"error_message"`
 }
+
+type MySQLComStmtPreparePacket struct {
+	Query string
+}
+
+type MySQLCOM_STMT_SEND_LONG_DATA struct {
+	StatementID uint32 `yaml:"statement_id"`
+	ParameterID uint16 `yaml:"parameter_id"`
+	Data        []byte `yaml:"data"`
+}
+
+type MySQLCOM_STMT_RESET struct {
+	StatementID uint32 `yaml:"statement_id"`
+}
+
+type MySQLComStmtFetchPacket struct {
+	StatementID uint32 `yaml:"statement_id"`
+	RowCount    uint32 `yaml:"row_count"`
+	Info        string `yaml:"info"`
+}
+
+type MySQLComChangeUserPacket struct {
+	User         string `yaml:"user"`
+	Auth         []byte `yaml:"auth"`
+	Db           string `yaml:"db"`
+	CharacterSet uint8  `yaml:"character_set"`
+	AuthPlugin   string `yaml:"auth_plugin"`
+}
