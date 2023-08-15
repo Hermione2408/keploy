@@ -130,3 +130,7 @@ type MySQLComChangeUserPacket struct {
 	CharacterSet uint8  `yaml:"character_set"`
 	AuthPlugin   string `yaml:"auth_plugin"`
 }
+
+type MySQLComStmtClosePacket struct {
+	StatementID uint32
+}
