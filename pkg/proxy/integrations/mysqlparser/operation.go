@@ -239,6 +239,9 @@ type HandshakeResponse struct {
 	PacketIndicator string        `yaml:"packet_indicator"`
 	PluginDetails   PluginDetails `yaml:"plugin_details"`
 }
+type ComStmtPreparePacket struct {
+	Query string
+}
 
 const (
 	iAuthMoreData                                byte = 0x01
@@ -494,12 +497,13 @@ func decodeAuthSwitchRequest(data []byte) (*AuthSwitchRequest, error) {
 	}, nil
 }
 
-func decodeComStmtPrepare(data []byte) (string, error) {
+func decodeComStmtPrepare(data []byte) (*ComStmtPreparePacket, error) {
 	if len(data) < 1 {
-		return "", errors.New("data too short for COM_STMT_PREPARE")
+		return nil, errors.New("data too short for COM_STMT_PREPARE")
 	}
 	// data[1:] will skip the command byte and leave the query string
-	return string(data[1:]), nil
+	query := string(data[1:])
+	return &ComStmtPreparePacket{Query: query}, nil
 }
 
 func decodeComStmtClose(data []byte) (uint32, error) {
