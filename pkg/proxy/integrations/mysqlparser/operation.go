@@ -242,6 +242,9 @@ type HandshakeResponse struct {
 type ComStmtPreparePacket struct {
 	Query string
 }
+type ComStmtClosePacket struct {
+	StatementID uint32
+}
 
 const (
 	iAuthMoreData                                byte = 0x01
@@ -506,13 +509,15 @@ func decodeComStmtPrepare(data []byte) (*ComStmtPreparePacket, error) {
 	return &ComStmtPreparePacket{Query: query}, nil
 }
 
-func decodeComStmtClose(data []byte) (uint32, error) {
+func decodeComStmtClose(data []byte) (*ComStmtClosePacket, error) {
 	if len(data) < 5 {
-		return 0, errors.New("data too short for COM_STMT_CLOSE")
+		return nil, errors.New("data too short for COM_STMT_CLOSE")
 	}
 	// Statement ID is 4-byte, little-endian integer after command byte
 	statementID := binary.LittleEndian.Uint32(data[1:])
-	return statementID, nil
+	return &ComStmtClosePacket{
+		StatementID: statementID,
+	}, nil
 }
 
 func decodeComStmtPrepareOk(data []byte) (*StmtPrepareOk, error) {
