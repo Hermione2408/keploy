@@ -415,7 +415,7 @@ func DecodeMySQLPacket(packet MySQLPacket, logger *zap.Logger, destConn net.Conn
 		packetData, err = decodeComChangeUser(data)
 		lastCommand = 0x11
 	case data[0] == 0x04: // Result Set Packet
-		packetType = "Result Set Packet"
+		packetType = "RESULT_SET_PACKET"
 		packetData, err = parseResultSet(data)
 		lastCommand = 0x04
 	case data[0] == 0x0A: // MySQLHandshakeV10

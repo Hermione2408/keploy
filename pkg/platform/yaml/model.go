@@ -304,14 +304,105 @@ func decodeMySqlMessage(yamlSpec *spec.MySQLSpec, logger *zap.Logger) (*models.M
 	for _, v := range yamlSpec.Requests {
 		req := models.MySQLRequest{
 			Header:    v.Header,
-			Message:   v.Message,
 			ReadDelay: v.ReadDelay,
 		}
+		switch v.Header.PacketType {
+		case "MySQLHandshakeV10":
+			requestMessage := &models.MySQLHandshakeV10Packet{}
+			err := v.Message.Decode(requestMessage)
+			if err != nil {
+				logger.Error(Emoji+"failed to unmarshal yml document into MySQLHandshakeV10Packet", zap.Error(err))
+				return nil, err
+			}
+			req.Message = requestMessage
+
+		case "MySQLQuery":
+			requestMessage := &models.MySQLQueryPacket{}
+			err := v.Message.Decode(requestMessage)
+			if err != nil {
+				logger.Error(Emoji+"failed to unmarshal yml document into MySQLQueryPacket", zap.Error(err))
+				return nil, err
+			}
+			req.Message = requestMessage
+		case "COM_STMT_PREPARE":
+			requestMessage := &models.MySQLHandshakeV10Packet{}
+			err := v.Message.Decode(requestMessage)
+			if err != nil {
+				logger.Error(Emoji+"failed to unmarshal yml document into MySQLHandshakeV10Packet", zap.Error(err))
+				// return fmt.Errorf("failed to decode the mongo OpReply of mock with name: %s.  error: %s", doc.Name, err.Error())
+				return nil, err
+			}
+			req.Message = requestMessage
+		case "COM_STMT_EXECUTE":
+			requestMessage := &models.MySQLComStmtExecute{}
+			err := v.Message.Decode(requestMessage)
+			if err != nil {
+				logger.Error(Emoji+"failed to unmarshal yml document into MySQLComStmtExecute", zap.Error(err))
+				return nil, err
+			}
+			req.Message = requestMessage
+
+		}
+		requests = append(requests, req)
+
 		fmt.Println(req, requests, mockSpec)
 	}
-	return &models.MockSpec{
-		Created: 12244,
-	}, nil
+	mockSpec.MySqlRequests = requests
+
+	responses := []models.MySQLResponse{}
+	for _, v := range yamlSpec.Response {
+		resp := models.MySQLResponse{
+			Header:    v.Header,
+			ReadDelay: v.ReadDelay,
+		}
+		// decode the yaml document to mongo response wiremessage
+		switch v.Header.PacketType {
+		case "HANDSHAKE_RESPONSE":
+			responseMessage := &models.MySQLHandshakeResponse{}
+			err := v.Message.Decode(responseMessage)
+			if err != nil {
+				logger.Error(Emoji+"failed to unmarshal yml document into MySQLHandshakeResponse ", zap.Error(err))
+				return nil, err
+			}
+			resp.Message = responseMessage
+		case "MySQLOK":
+			responseMessage := &models.MySQLOKPacket{}
+			err := v.Message.Decode(responseMessage)
+			if err != nil {
+				logger.Error(Emoji+"failed to unmarshal yml document into MySQLOKPacket ", zap.Error(err))
+				return nil, err
+			}
+			resp.Message = responseMessage
+		case "COM_STMT_PREPARE_OK":
+			responseMessage := &models.MySQLStmtPrepareOk{}
+			err := v.Message.Decode(responseMessage)
+			if err != nil {
+				logger.Error(Emoji+"failed to unmarshal yml document into MySQLStmtPrepareOk ", zap.Error(err))
+				return nil, err
+			}
+			resp.Message = responseMessage
+		case "RESULT_SET_PACKET":
+			responseMessage := &models.MySQLResultSet{}
+			err := v.Message.Decode(responseMessage)
+			if err != nil {
+				logger.Error(Emoji+"failed to unmarshal yml document into MySQLResultSet ", zap.Error(err))
+				return nil, err
+			}
+			resp.Message = responseMessage
+		case "MySQLErr":
+			responseMessage := &models.MySQLERRPacket{}
+			err := v.Message.Decode(responseMessage)
+			if err != nil {
+				logger.Error(Emoji+"failed to unmarshal yml document into MySQLERRPacket ", zap.Error(err))
+				return nil, err
+			}
+			resp.Message = responseMessage
+		}
+		responses = append(responses, resp)
+	}
+	mockSpec.MySqlResponses = responses
+	return &mockSpec, nil
+
 }
 func decodeMongoMessage(yamlSpec *spec.MongoSpec, logger *zap.Logger) (*models.MockSpec, error) {
 	mockSpec := models.MockSpec{
