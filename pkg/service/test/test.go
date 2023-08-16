@@ -73,8 +73,7 @@ func (t *tester) Test(path, testReportPath string, appCmd, appContainer, appNetw
 		return false
 	}
 	t.logger.Debug("the session indices are : ", zap.Any("", sessions))
-	sessions = []string{"test-suite-47"}
-
+	sessions = []string{"test-suite-14"}
 	result := true
 
 	for _, sessionIndex := range sessions {

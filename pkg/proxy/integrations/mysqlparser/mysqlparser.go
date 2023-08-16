@@ -73,7 +73,7 @@ func encodeOutgoingMySql(clientConnId, destConnId int, requestBuffer []byte, cli
 				logger.Error("failed to write handshake response to server", zap.Error(err))
 				return
 			}
-			//time.Sleep(1000 * time.Millisecond)
+			time.Sleep(1000 * time.Millisecond)
 			okPacket1, err := util.ReadBytes(destConn)
 			if err != nil {
 				logger.Error("failed to read packet from server after handshake", zap.Error(err))
@@ -315,7 +315,11 @@ func recordMySQLMessage(h *hooks.Hook, mysqlRequests []models.MySQLRequest, mysq
 }
 
 func bytesToMySQLPacket(buffer []byte) MySQLPacket {
-	// Assuming buffer is long enough
+	if buffer == nil || len(buffer) < 4 {
+		// Log an error, return an empty packet
+		fmt.Println("Error: buffer is nil or too short to be a valid MySQL packet")
+		return MySQLPacket{}
+	}
 	length := binary.LittleEndian.Uint32(append(buffer[0:3], 0))
 	sequenceID := buffer[3]
 	payload := buffer[4:]
