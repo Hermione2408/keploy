@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"go.keploy.io/server/pkg/models"
 	"go.uber.org/zap"
 )
 
@@ -298,6 +299,36 @@ const (
 	CLIENT_DEPRECATE_EOF
 )
 
+var mySQLfieldTypeNames = map[byte]string{
+	0x00: "MYSQL_TYPE_DECIMAL",
+	0x01: "MYSQL_TYPE_TINY",
+	0x02: "MYSQL_TYPE_SHORT",
+	0x03: "MYSQL_TYPE_LONG",
+	0x04: "MYSQL_TYPE_FLOAT",
+	0x05: "MYSQL_TYPE_DOUBLE",
+	0x06: "MYSQL_TYPE_NULL",
+	0x07: "MYSQL_TYPE_TIMESTAMP",
+	0x08: "MYSQL_TYPE_LONGLONG",
+	0x09: "MYSQL_TYPE_INT24",
+	0x0a: "MYSQL_TYPE_DATE",
+	0x0b: "MYSQL_TYPE_TIME",
+	0x0c: "MYSQL_TYPE_DATETIME",
+	0x0d: "MYSQL_TYPE_YEAR",
+	0x0e: "MYSQL_TYPE_NEWDATE",
+	0x0f: "MYSQL_TYPE_VARCHAR",
+	0x10: "MYSQL_TYPE_BIT",
+	0xf6: "MYSQL_TYPE_NEWDECIMAL",
+	0xf7: "MYSQL_TYPE_ENUM",
+	0xf8: "MYSQL_TYPE_SET",
+	0xf9: "MYSQL_TYPE_TINY_BLOB",
+	0xfa: "MYSQL_TYPE_MEDIUM_BLOB",
+	0xfb: "MYSQL_TYPE_LONG_BLOB",
+	0xfc: "MYSQL_TYPE_BLOB",
+	0xfd: "MYSQL_TYPE_VAR_STRING",
+	0xfe: "MYSQL_TYPE_STRING",
+	0xff: "MYSQL_TYPE_GEOMETRY",
+}
+
 func decodePacketType2(data []byte) (*PacketType2, error) {
 	if len(data) < 3 {
 		return nil, fmt.Errorf("PacketType2 too short")
@@ -398,41 +429,295 @@ func (p *MySQLPacket) Encode() ([]byte, error) {
 
 var lastCommand byte // This is global and will remember the last command
 
-func encodeHandshakePacket(packet *HandshakeV10Packet) ([]byte, error) {
+func encodeHandshakePacket(packet *models.MySQLHandshakeV10Packet) ([]byte, error) {
 	buf := new(bytes.Buffer)
+
+	// Protocol version
 	buf.WriteByte(packet.ProtocolVersion)
 
+	// Server version
 	buf.WriteString(packet.ServerVersion)
+	buf.WriteByte(0x00) // Null terminator
+
+	// Connection ID
+	binary.Write(buf, binary.LittleEndian, packet.ConnectionID)
+
+	// Auth-plugin-data-part-1 (first 8 bytes)
+	if len(packet.AuthPluginData) < 8 {
+		return nil, errors.New("auth plugin data too short")
+	}
+	buf.Write(packet.AuthPluginData[:8])
+
+	// Filler
 	buf.WriteByte(0x00)
 
-	binary.Write(buf, binary.LittleEndian, packet.ConnectionID)
-	buf.Write(packet.AuthPluginData)
+	// Lower 2 bytes of CapabilityFlags
+	binary.Write(buf, binary.LittleEndian, uint16(packet.CapabilityFlags))
+
+	// Character set
+	buf.WriteByte(packet.CharacterSet)
+
+	// Status flags
+	binary.Write(buf, binary.LittleEndian, packet.StatusFlags)
+
+	// Upper 2 bytes of CapabilityFlags
+	binary.Write(buf, binary.LittleEndian, uint16(packet.CapabilityFlags>>16))
+
+	// Length of auth-plugin-data (always 0x15 for the current version of the MySQL protocol)
+	buf.WriteByte(0x15)
+
+	// Reserved (10 zero bytes)
+	buf.Write(make([]byte, 10))
+
+	// Auth-plugin-data-part-2 (remaining auth data, 13 bytes, without the last byte)
+	if len(packet.AuthPluginData) < 21 {
+		return nil, errors.New("auth plugin data too short")
+	}
+	buf.Write(packet.AuthPluginData[8:20])
+
+	// Null terminator for auth-plugin-data
+	buf.WriteByte(0x00)
+
+	// Auth-plugin name
+	buf.WriteString(packet.AuthPluginName)
+	buf.WriteByte(0x00) // Null terminator
 
 	return buf.Bytes(), nil
 }
 
-func encodeHandshakeResponse(packet *HandshakeResponse) ([]byte, error) {
-	// TODO: Encode the HandshakeResponse packet fields
-	return nil, nil
+func encodeLengthEncodedInteger(value uint64) []byte {
+	if value <= 250 {
+		return []byte{byte(value)}
+	} else if value <= 0xffff {
+		return append([]byte{0xfc}, byte(value), byte(value>>8))
+	} else if value <= 0xffffff {
+		return append([]byte{0xfd}, byte(value), byte(value>>8), byte(value>>16))
+	} else {
+		return append([]byte{0xfe}, byte(value), byte(value>>8), byte(value>>16), byte(value>>24), byte(value>>32), byte(value>>40), byte(value>>48), byte(value>>56))
+	}
+}
+
+func encodeMySQLStmtPrepareOk(packet *models.MySQLStmtPrepareOk) ([]byte, error) {
+	buf := new(bytes.Buffer)
+	// Write status
+	buf.WriteByte(packet.Status)
+	// Write statement ID
+	binary.Write(buf, binary.LittleEndian, packet.StatementID)
+	// Write number of columns
+	binary.Write(buf, binary.LittleEndian, packet.NumColumns)
+	// Write number of parameters
+	binary.Write(buf, binary.LittleEndian, packet.NumParams)
+	// Write filler byte (0x00)
+	buf.WriteByte(0x00)
+	// Write warning count
+	binary.Write(buf, binary.LittleEndian, packet.WarningCount)
+	return buf.Bytes(), nil
+}
+
+func encodeMySQLResultSet(resultSet *models.MySQLResultSet) ([]byte, error) {
+	buf := new(bytes.Buffer)
+
+	// Write column count
+	writeLengthEncodedIntegers(buf, uint64(len(resultSet.Columns)))
+
+	// Write columns
+	for _, column := range resultSet.Columns {
+		buf.WriteByte(column.Catalog)
+		writeLengthEncodedStrings(buf, column.Schema)
+		writeLengthEncodedStrings(buf, column.Table)
+		writeLengthEncodedStrings(buf, column.OrgTable)
+		writeLengthEncodedStrings(buf, column.Name)
+		writeLengthEncodedStrings(buf, column.OrgName)
+		buf.WriteByte(0x0c) // Length of the fixed-length fields (12 bytes)
+		binary.Write(buf, binary.LittleEndian, column.CharacterSet)
+		binary.Write(buf, binary.LittleEndian, column.ColumnLength)
+		buf.WriteByte(columnTypeValues[column.ColumnType])
+		binary.Write(buf, binary.LittleEndian, column.Flags)
+		buf.WriteByte(column.Decimals)
+		buf.Write([]byte{0x00, 0x00}) // Filler
+
+		if column.DefaultValue != "" {
+			writeLengthEncodedStrings(buf, column.DefaultValue)
+		}
+	}
+
+	// Write EOF packet header
+	buf.Write([]byte{0xfe, 0x00, 0x00, 0x02, 0x00})
+
+	// Write rows
+	for _, row := range resultSet.Rows {
+		for _, value := range row.Values {
+			writeLengthEncodedStrings(buf, value)
+		}
+	}
+
+	// Write EOF packet header again
+	buf.Write([]byte{0xfe, 0x00, 0x00, 0x02, 0x00})
+
+	return buf.Bytes(), nil
+}
+
+func encodeColumnDefinitionPacket(packet *models.ColumnDefinitionPacket) ([]byte, error) {
+	buf := new(bytes.Buffer)
+
+	// Write the column attributes
+	writeLengthEncodedStrings(buf, packet.Catalog)
+	writeLengthEncodedStrings(buf, packet.Schema)
+	writeLengthEncodedStrings(buf, packet.Table)
+	writeLengthEncodedStrings(buf, packet.OrgTable)
+	writeLengthEncodedStrings(buf, packet.Name)
+	writeLengthEncodedStrings(buf, packet.OrgName)
+
+	// Write fixed-length fields
+	buf.WriteByte(0x0c)
+	binary.Write(buf, binary.LittleEndian, packet.CharacterSet)
+	binary.Write(buf, binary.LittleEndian, packet.ColumnLength)
+
+	// Write column type
+	buf.WriteByte(byte(mySQLfieldTypeNames[packet.ColumnType]))
+
+	// Write flags and decimals
+	binary.Write(buf, binary.LittleEndian, packet.Flags)
+	buf.WriteByte(byte(packet.Decimals))
+	buf.WriteByte(0x00) // Filler
+
+	// Write default value if available
+	if packet.DefaultValue != "" {
+		writeLengthEncodedStrings(buf, packet.DefaultValue)
+	}
+
+	return buf.Bytes(), nil
+}
+
+func encodeRow(row *models.Row) ([]byte, error) {
+	buf := new(bytes.Buffer)
+
+	// Write the number of columns
+	writeLengthEncodedIntegers(buf, uint64(len(row.Columns)))
+
+	// Write each column value as a length-encoded string
+	for _, colValue := range row.Columns {
+		writeLengthEncodedStrings(buf, colValue)
+	}
+
+	return buf.Bytes(), nil
+}
+
+func writeLengthEncodedIntegers(buf *bytes.Buffer, value uint64) {
+	if value <= 250 {
+		buf.WriteByte(byte(value))
+	} else if value <= 0xffff {
+		buf.WriteByte(0xfc)
+		buf.WriteByte(byte(value))
+		buf.WriteByte(byte(value >> 8))
+	} else if value <= 0xffffff {
+		buf.WriteByte(0xfd)
+		buf.WriteByte(byte(value))
+		buf.WriteByte(byte(value >> 8))
+		buf.WriteByte(byte(value >> 16))
+	} else {
+		buf.WriteByte(0xfe)
+		binary.Write(buf, binary.LittleEndian, value)
+	}
+}
+
+func writeLengthEncodedStrings(buf *bytes.Buffer, value string) {
+	data := []byte(value)
+	length := uint64(len(data))
+	writeLengthEncodedIntegers(buf, length)
+	buf.Write(data)
+}
+
+func encodeMySQLOK(packet *models.MySQLOKPacket) ([]byte, error) {
+	buf := new(bytes.Buffer)
+	// Write header (0x00)
+	buf.WriteByte(0x00)
+	// Write affected rows
+	buf.Write(encodeLengthEncodedInteger(packet.AffectedRows))
+	// Write last insert ID
+	buf.Write(encodeLengthEncodedInteger(packet.LastInsertID))
+	// Write status flags
+	binary.Write(buf, binary.LittleEndian, packet.StatusFlags)
+	// Write warnings
+	binary.Write(buf, binary.LittleEndian, packet.Warnings)
+	// Write info
+	buf.WriteString(packet.Info)
+	return buf.Bytes(), nil
+}
+
+func encodeHandshakeResponseOk(packet *models.MySQLHandshakeResponseOk) ([]byte, error) {
+	buf := new(bytes.Buffer)
+
+	switch packet.PacketIndicator {
+	case "OK":
+		buf.WriteByte(iOK)
+	case "AuthMoreData":
+		buf.WriteByte(iAuthMoreData)
+	case "EOF":
+		buf.WriteByte(iEOF)
+	default:
+		return nil, errors.New("unknown packet indicator")
+	}
+
+	if packet.PacketIndicator == "AuthMoreData" {
+		var authData byte
+		switch packet.PluginDetails.Type {
+		case "cachingSha2PasswordFastAuthSuccess":
+			authData = cachingSha2PasswordFastAuthSuccess
+		case "cachingSha2PasswordPerformFullAuthentication":
+			authData = cachingSha2PasswordPerformFullAuthentication
+		default:
+			return nil, errors.New("unknown auth type")
+		}
+
+		buf.WriteByte(authData)
+		if packet.PluginDetails.Message != "" {
+			buf.WriteString(packet.PluginDetails.Message)
+		}
+	}
+
+	return buf.Bytes(), nil
 }
 
 func encodeToBinary(packet interface{}, operation string) ([]byte, error) {
 	var data []byte
 	var err error
 
+	innerPacket, ok := packet.(*interface{})
+	if ok {
+		packet = *innerPacket
+	}
 	switch operation {
-	case "HandshakeV10Packet":
-		p, ok := packet.(*HandshakeV10Packet)
+	case "MySQLHandshakeV10":
+		p, ok := packet.(*models.MySQLHandshakeV10Packet)
 		if !ok {
-			return nil, errors.New("invalid packet type for HandshakeV10Packet")
+			return nil, fmt.Errorf("invalid packet type for HandshakeV10Packet: expected *HandshakeV10Packet, got %T", packet)
 		}
 		data, err = encodeHandshakePacket(p)
-	case "HandshakeResponse":
-		p, ok := packet.(*HandshakeResponse)
+	case "HANDSHAKE_RESPONSE_OK":
+		p, ok := packet.(*models.MySQLHandshakeResponseOk)
 		if !ok {
-			return nil, errors.New("invalid packet type for HandshakeResponse")
+			return nil, fmt.Errorf("invalid packet type for HandshakeResponse: expected *HandshakeResponse, got %T", packet)
 		}
-		data, err = encodeHandshakeResponse(p)
+		data, err = encodeHandshakeResponseOk(p)
+	case "MySQLOK":
+		p, ok := packet.(*models.MySQLOKPacket)
+		if !ok {
+			return nil, fmt.Errorf("invalid packet type for HandshakeResponse: expected *HandshakeResponse, got %T", packet)
+		}
+		data, err = encodeMySQLOK(p)
+	case "COM_STMT_PREPARE_OK":
+		p, ok := packet.(*models.MySQLStmtPrepareOk)
+		if !ok {
+			return nil, fmt.Errorf("invalid packet type for HandshakeResponse: expected *HandshakeResponse, got %T", packet)
+		}
+		data, err = encodeMySQLStmtPrepareOk(p)
+	case "RESULT_SET_PACKET":
+		p, ok := packet.(*models.MySQLResultSet)
+		if !ok {
+			return nil, fmt.Errorf("invalid packet for result set")
+		}
+		data, err = encodeMySQLResultSet(p)
 	default:
 		return nil, errors.New("unknown operation type")
 	}
@@ -1053,7 +1338,7 @@ func parseColumnDefinitionPacket(b []byte) (*ColumnDefinitionPacket, []byte, err
 	b = b[2:]
 	packet.ColumnLength = binary.LittleEndian.Uint32(b)
 	b = b[4:]
-	if name, ok := fieldTypeNames[fieldType(b[0])]; ok {
+	if name, ok := mySQLfieldTypeNames[fieldType(b[0])]; ok {
 		packet.ColumnType = name
 	} else {
 		packet.ColumnType = "unknown"

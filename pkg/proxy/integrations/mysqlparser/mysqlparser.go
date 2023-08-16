@@ -182,10 +182,14 @@ func decodeOutgoingMySQL(clientConnId, destConnId int, requestBuffer []byte, cli
 			mysqlRequests = []models.MySQLRequest{}
 			// mongoResponses = []models.MongoResponse{}
 		)
+		var (
+			mockResponseRead = 0
+		)
 		fmt.Println(mysqlRequests)
 		if firstLoop {
-			packet := configMocks[0]
-			binaryPacket, err := encodeToBinary(&packet, "HandshakeResponse")
+			packet := configMocks[0].Spec.MySqlResponses[0].Message
+			opr := configMocks[0].Spec.MySqlResponses[0].Header.PacketType
+			binaryPacket, err := encodeToBinary(&packet, opr)
 			if err != nil {
 				fmt.Println("Error:", err)
 				return
@@ -193,11 +197,11 @@ func decodeOutgoingMySQL(clientConnId, destConnId int, requestBuffer []byte, cli
 			_, err = clientConn.Write(binaryPacket)
 			requestBuffer, err1 := util.ReadBytes(clientConn)
 			oprRequest, requestHeader, mysqlRequest, err := DecodeMySQLPacket(bytesToMySQLPacket(requestBuffer), logger, destConn)
-			var handshakeResponseFromConfig = configMocks[0].Spec.MySqlResponses[0]
-			var handshakeResponsePacket = []byte{2}
+			handshakeResponseFromConfig := configMocks[0].Spec.MySqlResponses[1].Message
+			opr2 := configMocks[0].Spec.MySqlResponses[1].Header.PacketType
+			handshakeResponseBinary, err := encodeToBinary(&handshakeResponseFromConfig, opr2)
 			fmt.Println(oprRequest, requestHeader, mysqlRequest, handshakeResponseFromConfig, err1)
-
-			_, err = clientConn.Write(handshakeResponsePacket)
+			_, err = clientConn.Write(handshakeResponseBinary)
 
 			if err != nil {
 				logger.Error("failed to write query response to mysql client", zap.Error(err))
@@ -207,7 +211,10 @@ func decodeOutgoingMySQL(clientConnId, destConnId int, requestBuffer []byte, cli
 			requestBuffer, _ = util.ReadBytes(clientConn)
 			oprRequest, requestHeader, mysqlRequest, err := DecodeMySQLPacket(bytesToMySQLPacket(requestBuffer), logger, destConn)
 			fmt.Println(oprRequest, requestHeader, mysqlRequest, err)
-
+			handshakeResponseFromConfig := configMocks[mockResponseRead].Spec.MySqlResponses[0].Message
+			opr2 := configMocks[mockResponseRead].Spec.MySqlResponses[0].Header.PacketType
+			responseBinary, err := encodeToBinary(&handshakeResponseFromConfig, opr2)
+			_, err = clientConn.Write(responseBinary)
 		}
 
 		firstLoop = false

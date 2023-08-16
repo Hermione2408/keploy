@@ -307,15 +307,14 @@ func decodeMySqlMessage(yamlSpec *spec.MySQLSpec, logger *zap.Logger) (*models.M
 			ReadDelay: v.ReadDelay,
 		}
 		switch v.Header.PacketType {
-		case "MySQLHandshakeV10":
-			requestMessage := &models.MySQLHandshakeV10Packet{}
+		case "HANDSHAKE_RESPONSE":
+			requestMessage := &models.MySQLHandshakeResponse{}
 			err := v.Message.Decode(requestMessage)
 			if err != nil {
-				logger.Error(Emoji+"failed to unmarshal yml document into MySQLHandshakeV10Packet", zap.Error(err))
+				logger.Error(Emoji+"failed to unmarshal yml document into MySQLHandshakeResponse ", zap.Error(err))
 				return nil, err
 			}
 			req.Message = requestMessage
-
 		case "MySQLQuery":
 			requestMessage := &models.MySQLQueryPacket{}
 			err := v.Message.Decode(requestMessage)
@@ -403,11 +402,11 @@ func decodeMySqlMessage(yamlSpec *spec.MySQLSpec, logger *zap.Logger) (*models.M
 				return nil, err
 			}
 			resp.Message = responseMessage
-		case "HANDSHAKE_RESPONSE":
-			responseMessage := &models.MySQLHandshakeResponse{}
+		case "MySQLHandshakeV10":
+			responseMessage := &models.MySQLHandshakeV10Packet{}
 			err := v.Message.Decode(responseMessage)
 			if err != nil {
-				logger.Error(Emoji+"failed to unmarshal yml document into MySQLHandshakeResponse ", zap.Error(err))
+				logger.Error(Emoji+"failed to unmarshal yml document into MySQLHandshakeV10Packet", zap.Error(err))
 				return nil, err
 			}
 			resp.Message = responseMessage
