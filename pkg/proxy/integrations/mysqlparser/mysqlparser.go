@@ -39,13 +39,16 @@ func ProcessOutgoingMySql(clientConnId, destConnId int, requestBuffer []byte, cl
 	}
 }
 
+var (
+	isConfigRecorded = false
+)
+
 func encodeOutgoingMySql(clientConnId, destConnId int, requestBuffer []byte, clientConn, destConn net.Conn, h *hooks.Hook, started time.Time, readRequestDelay time.Duration, logger *zap.Logger) {
 	var (
 		mysqlRequests  = []models.MySQLRequest{}
 		mysqlResponses = []models.MySQLResponse{}
 	)
 	for {
-		isConfigRecorded := false
 		data, source, err := ReadFirstBuffer(clientConn, destConn)
 		if err != nil {
 			logger.Error("failed to read initial data", zap.Error(err))
@@ -153,8 +156,8 @@ func encodeOutgoingMySql(clientConnId, destConnId int, requestBuffer []byte, cli
 			})
 			if !isConfigRecorded {
 				recordMySQLMessage(h, mysqlRequests, mysqlResponses, oprRequest, oprResponse2, "config")
+				isConfigRecorded = true
 			}
-			isConfigRecorded = true
 			handleClientQueries(h, nil, clientConn, destConn, logger)
 
 		} else if source == "client" {
@@ -254,7 +257,7 @@ func handleClientQueries(h *hooks.Hook, initialBuffer []byte, clientConn, destCo
 			return nil, err
 		}
 		if res == 9 {
-			break
+			return nil, nil
 		}
 
 		queryResponse, err := util.ReadBytes(destConn)
