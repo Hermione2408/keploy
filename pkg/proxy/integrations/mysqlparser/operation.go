@@ -236,14 +236,14 @@ type PluginDetails struct {
 }
 
 type HandshakeResponse struct {
-	CapabilityFlags uint32
-	MaxPacketSize   uint32
-	CharacterSet    uint8
-	Reserved        [23]uint8
-	Username        string
-	AuthData        []byte
-	Database        string
-	AuthPluginName  string
+	CapabilityFlags uint32   `yaml:"capability_flags"`
+	MaxPacketSize   uint32   `yaml:"max_packet_size"`
+	CharacterSet    uint8    `yaml:"character_set"`
+	Reserved        [23]byte `yaml:"reserved"`
+	Username        string   `yaml:"username"`
+	AuthData        []byte   `yaml:"auth_data"`
+	Database        string   `yaml:"database"`
+	AuthPluginName  string   `yaml:"auth_plugin_name"`
 }
 
 type HandshakeResponseOk struct {
@@ -397,6 +397,55 @@ func (p *MySQLPacket) Encode() ([]byte, error) {
 }
 
 var lastCommand byte // This is global and will remember the last command
+
+func encodeHandshakePacket(packet *HandshakeV10Packet) ([]byte, error) {
+	buf := new(bytes.Buffer)
+	buf.WriteByte(packet.ProtocolVersion)
+
+	buf.WriteString(packet.ServerVersion)
+	buf.WriteByte(0x00)
+
+	binary.Write(buf, binary.LittleEndian, packet.ConnectionID)
+	buf.Write(packet.AuthPluginData)
+
+	return buf.Bytes(), nil
+}
+
+func encodeHandshakeResponse(packet *HandshakeResponse) ([]byte, error) {
+	// TODO: Encode the HandshakeResponse packet fields
+	return nil, nil
+}
+
+func encodeToBinary(packet interface{}, operation string) ([]byte, error) {
+	var data []byte
+	var err error
+
+	switch operation {
+	case "HandshakeV10Packet":
+		p, ok := packet.(*HandshakeV10Packet)
+		if !ok {
+			return nil, errors.New("invalid packet type for HandshakeV10Packet")
+		}
+		data, err = encodeHandshakePacket(p)
+	case "HandshakeResponse":
+		p, ok := packet.(*HandshakeResponse)
+		if !ok {
+			return nil, errors.New("invalid packet type for HandshakeResponse")
+		}
+		data, err = encodeHandshakeResponse(p)
+	default:
+		return nil, errors.New("unknown operation type")
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	header := make([]byte, 4)
+	binary.LittleEndian.PutUint32(header, uint32(len(data)))
+
+	return append(header, data...), nil
+}
 
 func DecodeMySQLPacket(packet MySQLPacket, logger *zap.Logger, destConn net.Conn) (string, MySQLPacketHeader, interface{}, error) {
 	data := packet.Payload

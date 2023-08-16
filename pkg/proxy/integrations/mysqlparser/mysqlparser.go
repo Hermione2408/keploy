@@ -34,7 +34,7 @@ func ProcessOutgoingMySql(clientConnId, destConnId int, requestBuffer []byte, cl
 		// }
 	case models.MODE_TEST:
 		fmt.Println("into test mode. clientConnId: ", clientConnId)
-		//decodeOutgoingMySQL(clientConnId, destConnId, requestBuffer, clientConn, destConn, h, started, readRequestDelay, logger)
+		decodeOutgoingMySQL(clientConnId, destConnId, requestBuffer, clientConn, destConn, h, started, readRequestDelay, logger)
 	default:
 	}
 }
@@ -167,29 +167,53 @@ func encodeOutgoingMySql(clientConnId, destConnId int, requestBuffer []byte, cli
 	return
 }
 
-// func decodeOutgoingMySQL(clientConnId, destConnId int, requestBuffer []byte, clientConn, destConn net.Conn, h *hooks.Hook, started time.Time, readRequestDelay time.Duration, logger *zap.Logger) {
-// 	// startedDecoding := time.Now()
-// 	configMocks := h.GetConfigMocks()
-// 	tcsMocks := h.GetTcsMocks()
-// 	fmt.Println(configMocks, tcsMocks)
-// 	startedDecoding := time.Now()
-// 	firstLoop := true
-// 	for {
-// 		configMocks := h.GetConfigMocks()
-// 		tcsMocks := h.GetTcsMocks()
-// 		var (
-// 			mysqlRequests = []models.MySQLRequest{}
-// 			// mongoResponses = []models.MongoResponse{}
-// 			err error
-// 		)
-// 		if firstLoop {
-// 			requestBuffer = util.ReadBytes((destConn))
-// 		}
+func decodeOutgoingMySQL(clientConnId, destConnId int, requestBuffer []byte, clientConn, destConn net.Conn, h *hooks.Hook, started time.Time, readRequestDelay time.Duration, logger *zap.Logger) {
+	// startedDecoding := time.Now()
+	configMocks := h.GetConfigMocks()
+	tcsMocks := h.GetTcsMocks()
+	fmt.Println(configMocks, tcsMocks)
+	startedDecoding := time.Now()
+	firstLoop := true
+	for {
+		configMocks := h.GetConfigMocks()
+		tcsMocks := h.GetTcsMocks()
+		fmt.Println(configMocks, tcsMocks)
+		var (
+			mysqlRequests = []models.MySQLRequest{}
+			// mongoResponses = []models.MongoResponse{}
+		)
+		fmt.Println(mysqlRequests)
+		if firstLoop {
+			packet := configMocks[0]
+			binaryPacket, err := encodeToBinary(&packet, "HandshakeResponse")
+			if err != nil {
+				fmt.Println("Error:", err)
+				return
+			}
+			_, err = clientConn.Write(binaryPacket)
+			requestBuffer, err1 := util.ReadBytes(clientConn)
+			oprRequest, requestHeader, mysqlRequest, err := DecodeMySQLPacket(bytesToMySQLPacket(requestBuffer), logger, destConn)
+			var handshakeResponseFromConfig = configMocks[0].Spec.MySqlResponses[0]
+			var handshakeResponsePacket = []byte{2}
+			fmt.Println(oprRequest, requestHeader, mysqlRequest, handshakeResponseFromConfig, err1)
 
-// 		firstLoop = false
-// 	}
+			_, err = clientConn.Write(handshakeResponsePacket)
 
-// }
+			if err != nil {
+				logger.Error("failed to write query response to mysql client", zap.Error(err))
+				return
+			}
+		} else {
+			requestBuffer, _ = util.ReadBytes(clientConn)
+			oprRequest, requestHeader, mysqlRequest, err := DecodeMySQLPacket(bytesToMySQLPacket(requestBuffer), logger, destConn)
+			fmt.Println(oprRequest, requestHeader, mysqlRequest, err)
+
+		}
+
+		firstLoop = false
+	}
+	fmt.Println(startedDecoding, firstLoop)
+}
 
 func ReadFirstBuffer(clientConn, destConn net.Conn) ([]byte, string, error) {
 
