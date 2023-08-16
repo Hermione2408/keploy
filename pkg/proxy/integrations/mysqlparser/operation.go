@@ -234,8 +234,17 @@ type PluginDetails struct {
 	Type    string `yaml:"type"`
 	Message string `yaml:"message"`
 }
-
 type HandshakeResponse struct {
+	CapabilityFlags uint32
+	MaxPacketSize   uint32
+	CharacterSet    uint8
+	Reserved        [23]byte
+	Username        string
+	AuthData        []byte
+	Database        string
+	AuthPluginName  string
+}
+type HandshakeResponseOk struct {
 	PacketIndicator string        `yaml:"packet_indicator"`
 	PluginDetails   PluginDetails `yaml:"plugin_details"`
 }
@@ -467,9 +476,13 @@ func DecodeMySQLPacket(packet MySQLPacket, logger *zap.Logger, destConn net.Conn
 		packetType = "COM_STMT_RESET"
 		packetData, err = decodeComStmtReset(data)
 		lastCommand = 0x1a
-	case data[0] == 0x01: // Handshake Response packet
+	case data[0] == 0x8d: // Handshake Response packet
 		packetType = "HANDSHAKE_RESPONSE"
 		packetData, err = decodeHandshakeResponse(data)
+		lastCommand = 0x8d // This value may differ depending on the handshake response protocol version
+	case data[0] == 0x01: // Handshake Response packet
+		packetType = "HANDSHAKE_RESPONSE_OK"
+		packetData, err = decodeHandshakeResponseOk(data)
 	default:
 		packetType = "Unknown"
 		packetData = data
@@ -506,6 +519,7 @@ func decodeComStmtPrepare(data []byte) (*ComStmtPreparePacket, error) {
 	}
 	// data[1:] will skip the command byte and leave the query string
 	query := string(data[1:])
+	query = strings.ReplaceAll(query, "\t", "")
 	return &ComStmtPreparePacket{Query: query}, nil
 }
 
@@ -1044,6 +1058,68 @@ func decodeMySQLPacketHeader(data []byte) (MySQLPacketHeader, error) {
 	return MySQLPacketHeader{PayloadLength: length, SequenceID: sequenceID}, nil
 }
 func decodeHandshakeResponse(data []byte) (*HandshakeResponse, error) {
+	if len(data) < 32 {
+		return nil, fmt.Errorf("handshake response packet too short")
+	}
+
+	packet := &HandshakeResponse{}
+
+	packet.CapabilityFlags = binary.LittleEndian.Uint32(data[:4])
+	data = data[4:]
+
+	packet.MaxPacketSize = binary.LittleEndian.Uint32(data[:4])
+	data = data[4:]
+
+	packet.CharacterSet = data[0]
+	data = data[1:]
+
+	copy(packet.Reserved[:], data[:23])
+	data = data[23:]
+
+	idx := bytes.IndexByte(data, 0x00)
+	if idx == -1 {
+		return nil, fmt.Errorf("malformed handshake response packet: missing null terminator for Username")
+	}
+	packet.Username = string(data[:idx])
+	data = data[idx+1:]
+
+	if packet.CapabilityFlags&0x40000000 != 0 {
+		authDataLen := int(data[0])
+		data = data[1:]
+
+		if len(data) < authDataLen {
+			return nil, fmt.Errorf("handshake response packet too short for auth data")
+		}
+		packet.AuthData = data[:authDataLen]
+		data = data[authDataLen:]
+	} else {
+		idx = bytes.IndexByte(data, 0x00)
+		if idx != -1 {
+			packet.AuthData = data[:idx]
+			data = data[idx+1:]
+		}
+	}
+
+	if packet.CapabilityFlags&0x00000800 != 0 {
+		idx := bytes.IndexByte(data, 0x00)
+		if idx == -1 {
+			return nil, fmt.Errorf("malformed handshake response packet: missing null terminator for Database")
+		}
+		packet.Database = string(data[:idx])
+		data = data[idx+1:]
+	}
+
+	if packet.CapabilityFlags&0x00080000 != 0 {
+		idx := bytes.IndexByte(data, 0x00)
+		if idx == -1 {
+			return nil, fmt.Errorf("malformed handshake response packet: missing null terminator for AuthPluginName")
+		}
+		packet.AuthPluginName = string(data[:idx])
+	}
+
+	return packet, nil
+}
+func decodeHandshakeResponseOk(data []byte) (*HandshakeResponseOk, error) {
 	var (
 		packetIndicator string
 		authType        string
@@ -1078,7 +1154,7 @@ func decodeHandshakeResponse(data []byte) (*HandshakeResponse, error) {
 			}
 		}
 	}
-	return &HandshakeResponse{
+	return &HandshakeResponseOk{
 		PacketIndicator: packetIndicator,
 		PluginDetails: PluginDetails{
 			Type:    authType,

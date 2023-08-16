@@ -395,6 +395,14 @@ func decodeMySqlMessage(yamlSpec *spec.MySQLSpec, logger *zap.Logger) (*models.M
 		}
 		// decode the yaml document to mysql structs
 		switch v.Header.PacketType {
+		case "HANDSHAKE_RESPONSE_OK":
+			responseMessage := &models.MySQLHandshakeResponseOk{}
+			err := v.Message.Decode(responseMessage)
+			if err != nil {
+				logger.Error(Emoji+"failed to unmarshal yml document into MySQLHandshakeResponseOk ", zap.Error(err))
+				return nil, err
+			}
+			resp.Message = responseMessage
 		case "HANDSHAKE_RESPONSE":
 			responseMessage := &models.MySQLHandshakeResponse{}
 			err := v.Message.Decode(responseMessage)

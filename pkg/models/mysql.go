@@ -32,9 +32,19 @@ type PluginDetails struct {
 	Type    string `yaml:"type"`
 	Message string `yaml:"message"`
 }
-type MySQLHandshakeResponse struct {
+type MySQLHandshakeResponseOk struct {
 	PacketIndicator string        `yaml:"packet_indicator"`
 	PluginDetails   PluginDetails `yaml:"plugin_details"`
+}
+type MySQLHandshakeResponse struct {
+	CapabilityFlags uint32
+	MaxPacketSize   uint32
+	CharacterSet    uint8
+	Reserved        [23]byte
+	Username        string
+	AuthData        []byte
+	Database        string
+	AuthPluginName  string
 }
 
 type MySQLQueryPacket struct {
