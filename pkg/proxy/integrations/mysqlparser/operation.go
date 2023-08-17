@@ -515,16 +515,20 @@ func encodeHandshakePacket(packet *models.MySQLHandshakeV10Packet) ([]byte, erro
 	return buf.Bytes(), nil
 }
 
-func encodeLengthEncodedInteger(value uint64) []byte {
-	if value <= 250 {
-		return []byte{byte(value)}
-	} else if value <= 0xffff {
-		return append([]byte{0xfc}, byte(value), byte(value>>8))
-	} else if value <= 0xffffff {
-		return append([]byte{0xfd}, byte(value), byte(value>>8), byte(value>>16))
+func encodeLengthEncodedInteger(n uint64) []byte {
+	var buf []byte
+
+	if n <= 250 {
+		buf = append(buf, byte(n))
+	} else if n <= 0xffff {
+		buf = append(buf, 0xfc, byte(n), byte(n>>8))
+	} else if n <= 0xffffff {
+		buf = append(buf, 0xfd, byte(n), byte(n>>8), byte(n>>16))
 	} else {
-		return append([]byte{0xfe}, byte(value), byte(value>>8), byte(value>>16), byte(value>>24), byte(value>>32), byte(value>>40), byte(value>>48), byte(value>>56))
+		buf = append(buf, 0xfe, byte(n), byte(n>>8), byte(n>>16), byte(n>>24), byte(n>>32), byte(n>>40), byte(n>>48), byte(n>>56))
 	}
+
+	return buf
 }
 
 func encodeMySQLStmtPrepareOk(packet *models.MySQLStmtPrepareOk) ([]byte, error) {
@@ -673,9 +677,9 @@ func encodeMySQLOK(packet *models.MySQLOKPacket) ([]byte, error) {
 	// Write last insert ID
 	buf.Write(encodeLengthEncodedInteger(packet.LastInsertID))
 	// Write status flags
-	binary.Write(buf, binary.LittleEndian, packet.StatusFlags)
+	binary.Write(buf, binary.BigEndian, packet.StatusFlags)
 	// Write warnings
-	binary.Write(buf, binary.LittleEndian, packet.Warnings)
+	binary.Write(buf, binary.BigEndian, packet.Warnings)
 	// Write info
 	buf.WriteString(packet.Info)
 	return buf.Bytes(), nil
@@ -730,7 +734,7 @@ func encodeHandshakeResponseOk(packet *models.MySQLHandshakeResponseOk) ([]byte,
 	return payload, nil
 }
 
-func encodeToBinary(packet interface{}, operation string) ([]byte, error) {
+func encodeToBinary(packet interface{}, operation string, sequence int) ([]byte, error) {
 	var data []byte
 	var err error
 	var bypassHeader = false
@@ -780,6 +784,8 @@ func encodeToBinary(packet interface{}, operation string) ([]byte, error) {
 	if !bypassHeader {
 		header := make([]byte, 4)
 		binary.LittleEndian.PutUint32(header, uint32(len(data)))
+		header[3] = byte(sequence)
+		fmt.Println(uint32(len(data)))
 		return append(header, data...), nil
 	} else {
 		return data, nil

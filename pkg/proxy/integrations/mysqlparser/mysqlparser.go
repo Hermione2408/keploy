@@ -169,9 +169,6 @@ func encodeOutgoingMySql(clientConnId, destConnId int, requestBuffer []byte, cli
 
 func decodeOutgoingMySQL(clientConnId, destConnId int, requestBuffer []byte, clientConn, destConn net.Conn, h *hooks.Hook, started time.Time, readRequestDelay time.Duration, logger *zap.Logger) {
 	// startedDecoding := time.Now()
-	configMocks := h.GetConfigMocks()
-	tcsMocks := h.GetTcsMocks()
-	fmt.Println(configMocks, tcsMocks)
 	startedDecoding := time.Now()
 	firstLoop := true
 	for {
@@ -189,7 +186,7 @@ func decodeOutgoingMySQL(clientConnId, destConnId int, requestBuffer []byte, cli
 		if firstLoop {
 			packet := configMocks[0].Spec.MySqlResponses[0].Message
 			opr := configMocks[0].Spec.MySqlResponses[0].Header.PacketType
-			binaryPacket, err := encodeToBinary(&packet, opr)
+			binaryPacket, err := encodeToBinary(&packet, opr, 0)
 			if err != nil {
 				fmt.Println("Error:", err)
 				return
@@ -200,7 +197,7 @@ func decodeOutgoingMySQL(clientConnId, destConnId int, requestBuffer []byte, cli
 			// oprRequest, requestHeader, mysqlRequest, err := DecodeMySQLPacket(bytesToMySQLPacket(requestBuffer), logger, destConn)
 			handshakeResponseFromConfig := configMocks[0].Spec.MySqlResponses[1].Message
 			opr2 := configMocks[0].Spec.MySqlResponses[1].Header.PacketType
-			handshakeResponseBinary, err := encodeToBinary(&handshakeResponseFromConfig, opr2)
+			handshakeResponseBinary, err := encodeToBinary(&handshakeResponseFromConfig, opr2, 1)
 			// _, err = destConn.Write(requestBuffer)
 			//fmt.Println(oprRequest, requestHeader, mysqlRequest, handshakeResponseFromConfig, err1)
 			_, err = clientConn.Write(handshakeResponseBinary)
@@ -215,7 +212,7 @@ func decodeOutgoingMySQL(clientConnId, destConnId int, requestBuffer []byte, cli
 			fmt.Println(oprRequest, requestHeader, mysqlRequest, err)
 			handshakeResponseFromConfig := tcsMocks[mockResponseRead].Spec.MySqlResponses[0].Message
 			opr2 := tcsMocks[mockResponseRead].Spec.MySqlResponses[0].Header.PacketType
-			responseBinary, err := encodeToBinary(&handshakeResponseFromConfig, opr2)
+			responseBinary, err := encodeToBinary(&handshakeResponseFromConfig, opr2, mockResponseRead+1)
 			_, err = clientConn.Write(responseBinary)
 		}
 
