@@ -250,6 +250,7 @@ type HandshakeResponse struct {
 type HandshakeResponseOk struct {
 	PacketIndicator string        `yaml:"packet_indicator"`
 	PluginDetails   PluginDetails `yaml:"plugin_details"`
+	RemainingBytes  []byte        `yaml:"remaining_bytes"`
 }
 type ComStmtPreparePacket struct {
 	Query string
@@ -681,18 +682,21 @@ func encodeMySQLOK(packet *models.MySQLOKPacket) ([]byte, error) {
 }
 
 func encodeHandshakeResponseOk(packet *models.MySQLHandshakeResponseOk) ([]byte, error) {
-	buf := new(bytes.Buffer)
+	var buf bytes.Buffer
 
+	var packetIndicator byte
 	switch packet.PacketIndicator {
 	case "OK":
-		buf.WriteByte(iOK)
+		packetIndicator = iOK
 	case "AuthMoreData":
-		buf.WriteByte(iAuthMoreData)
+		packetIndicator = iAuthMoreData
 	case "EOF":
-		buf.WriteByte(iEOF)
+		packetIndicator = iEOF
 	default:
-		return nil, errors.New("unknown packet indicator")
+		return nil, fmt.Errorf("unknown packet indicator")
 	}
+
+	buf.WriteByte(packetIndicator)
 
 	if packet.PacketIndicator == "AuthMoreData" {
 		var authData byte
@@ -702,22 +706,34 @@ func encodeHandshakeResponseOk(packet *models.MySQLHandshakeResponseOk) ([]byte,
 		case "cachingSha2PasswordPerformFullAuthentication":
 			authData = cachingSha2PasswordPerformFullAuthentication
 		default:
-			return nil, errors.New("unknown auth type")
+			return nil, fmt.Errorf("unknown auth type")
 		}
 
+		// Write auth data
 		buf.WriteByte(authData)
-		if packet.PluginDetails.Message != "" {
-			buf.WriteString(packet.PluginDetails.Message)
-		}
 	}
 
-	return buf.Bytes(), nil
+	// Write remaining bytes if available
+	if len(packet.RemainingBytes) > 0 {
+		buf.Write(packet.RemainingBytes)
+	}
+
+	// Create header
+	header := make([]byte, 4)
+	header[0] = 2 // sequence number
+	header[1] = 0
+	header[2] = 0
+	header[3] = 2
+	// Prepend header to the payload
+	payload := append(header, buf.Bytes()...)
+
+	return payload, nil
 }
 
 func encodeToBinary(packet interface{}, operation string) ([]byte, error) {
 	var data []byte
 	var err error
-
+	var bypassHeader = false
 	innerPacket, ok := packet.(*interface{})
 	if ok {
 		packet = *innerPacket
@@ -730,6 +746,7 @@ func encodeToBinary(packet interface{}, operation string) ([]byte, error) {
 		}
 		data, err = encodeHandshakePacket(p)
 	case "HANDSHAKE_RESPONSE_OK":
+		bypassHeader = true
 		p, ok := packet.(*models.MySQLHandshakeResponseOk)
 		if !ok {
 			return nil, fmt.Errorf("invalid packet type for HandshakeResponse: expected *HandshakeResponse, got %T", packet)
@@ -760,11 +777,13 @@ func encodeToBinary(packet interface{}, operation string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	header := make([]byte, 4)
-	binary.LittleEndian.PutUint32(header, uint32(len(data)))
-
-	return append(header, data...), nil
+	if !bypassHeader {
+		header := make([]byte, 4)
+		binary.LittleEndian.PutUint32(header, uint32(len(data)))
+		return append(header, data...), nil
+	} else {
+		return data, nil
+	}
 }
 
 func DecodeMySQLPacket(packet MySQLPacket, logger *zap.Logger, destConn net.Conn) (string, MySQLPacketHeader, interface{}, error) {
@@ -1498,8 +1517,9 @@ func decodeHandshakeResponseOk(data []byte) (*HandshakeResponseOk, error) {
 		packetIndicator string
 		authType        string
 		message         string
+		remainingBytes  []byte
 	)
-	fmt.Println(data, handshakePluginName)
+
 	switch data[0] {
 	case iOK:
 		packetIndicator = "OK"
@@ -1508,8 +1528,9 @@ func decodeHandshakeResponseOk(data []byte) (*HandshakeResponseOk, error) {
 	case iEOF:
 		packetIndicator = "EOF"
 	default:
-		packetIndicator = "Unknows"
+		packetIndicator = "Unknown"
 	}
+
 	if data[0] == iAuthMoreData {
 		count := int(data[0])
 		var authData = data[1 : count+1]
@@ -1521,19 +1542,23 @@ func decodeHandshakeResponseOk(data []byte) (*HandshakeResponseOk, error) {
 				case cachingSha2PasswordFastAuthSuccess:
 					authType = "cachingSha2PasswordFastAuthSuccess"
 					message = "Ok"
+					remainingBytes = data[count+1:]
 				case cachingSha2PasswordPerformFullAuthentication:
 					authType = "cachingSha2PasswordPerformFullAuthentication"
 					message = ""
+					remainingBytes = data[count+1:]
 				}
 			}
 		}
 	}
+
 	return &HandshakeResponseOk{
 		PacketIndicator: packetIndicator,
 		PluginDetails: PluginDetails{
 			Type:    authType,
 			Message: message,
 		},
+		RemainingBytes: remainingBytes,
 	}, nil
 }
 

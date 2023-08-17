@@ -195,12 +195,14 @@ func decodeOutgoingMySQL(clientConnId, destConnId int, requestBuffer []byte, cli
 				return
 			}
 			_, err = clientConn.Write(binaryPacket)
-			requestBuffer, err1 := util.ReadBytes(clientConn)
-			oprRequest, requestHeader, mysqlRequest, err := DecodeMySQLPacket(bytesToMySQLPacket(requestBuffer), logger, destConn)
+			requestBuffer, err = util.ReadBytes(clientConn)
+			fmt.Println(requestBuffer)
+			// oprRequest, requestHeader, mysqlRequest, err := DecodeMySQLPacket(bytesToMySQLPacket(requestBuffer), logger, destConn)
 			handshakeResponseFromConfig := configMocks[0].Spec.MySqlResponses[1].Message
 			opr2 := configMocks[0].Spec.MySqlResponses[1].Header.PacketType
 			handshakeResponseBinary, err := encodeToBinary(&handshakeResponseFromConfig, opr2)
-			fmt.Println(oprRequest, requestHeader, mysqlRequest, handshakeResponseFromConfig, err1)
+			// _, err = destConn.Write(requestBuffer)
+			//fmt.Println(oprRequest, requestHeader, mysqlRequest, handshakeResponseFromConfig, err1)
 			_, err = clientConn.Write(handshakeResponseBinary)
 
 			if err != nil {
@@ -211,8 +213,8 @@ func decodeOutgoingMySQL(clientConnId, destConnId int, requestBuffer []byte, cli
 			requestBuffer, _ = util.ReadBytes(clientConn)
 			oprRequest, requestHeader, mysqlRequest, err := DecodeMySQLPacket(bytesToMySQLPacket(requestBuffer), logger, destConn)
 			fmt.Println(oprRequest, requestHeader, mysqlRequest, err)
-			handshakeResponseFromConfig := configMocks[mockResponseRead].Spec.MySqlResponses[0].Message
-			opr2 := configMocks[mockResponseRead].Spec.MySqlResponses[0].Header.PacketType
+			handshakeResponseFromConfig := tcsMocks[mockResponseRead].Spec.MySqlResponses[0].Message
+			opr2 := tcsMocks[mockResponseRead].Spec.MySqlResponses[0].Header.PacketType
 			responseBinary, err := encodeToBinary(&handshakeResponseFromConfig, opr2)
 			_, err = clientConn.Write(responseBinary)
 		}

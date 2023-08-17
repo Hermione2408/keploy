@@ -35,6 +35,7 @@ type PluginDetails struct {
 type MySQLHandshakeResponseOk struct {
 	PacketIndicator string        `yaml:"packet_indicator"`
 	PluginDetails   PluginDetails `yaml:"plugin_details"`
+	RemainingBytes  []byte        `yaml:"remaining_bytes"`
 }
 type MySQLHandshakeResponse struct {
 	CapabilityFlags uint32   `yaml:"capability_flags"`
