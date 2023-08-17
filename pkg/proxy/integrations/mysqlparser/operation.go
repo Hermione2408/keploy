@@ -328,6 +328,35 @@ var mySQLfieldTypeNames = map[byte]string{
 	0xfe: "MYSQL_TYPE_STRING",
 	0xff: "MYSQL_TYPE_GEOMETRY",
 }
+var columnTypeValues = map[string]byte{
+	"MYSQL_TYPE_DECIMAL":     0x00,
+	"MYSQL_TYPE_TINY":        0x01,
+	"MYSQL_TYPE_SHORT":       0x02,
+	"MYSQL_TYPE_LONG":        0x03,
+	"MYSQL_TYPE_FLOAT":       0x04,
+	"MYSQL_TYPE_DOUBLE":      0x05,
+	"MYSQL_TYPE_NULL":        0x06,
+	"MYSQL_TYPE_TIMESTAMP":   0x07,
+	"MYSQL_TYPE_LONGLONG":    0x08,
+	"MYSQL_TYPE_INT24":       0x09,
+	"MYSQL_TYPE_DATE":        0x0a,
+	"MYSQL_TYPE_TIME":        0x0b,
+	"MYSQL_TYPE_DATETIME":    0x0c,
+	"MYSQL_TYPE_YEAR":        0x0d,
+	"MYSQL_TYPE_NEWDATE":     0x0e,
+	"MYSQL_TYPE_VARCHAR":     0x0f,
+	"MYSQL_TYPE_BIT":         0x10,
+	"MYSQL_TYPE_NEWDECIMAL":  0xf6,
+	"MYSQL_TYPE_ENUM":        0xf7,
+	"MYSQL_TYPE_SET":         0xf8,
+	"MYSQL_TYPE_TINY_BLOB":   0xf9,
+	"MYSQL_TYPE_MEDIUM_BLOB": 0xfa,
+	"MYSQL_TYPE_LONG_BLOB":   0xfb,
+	"MYSQL_TYPE_BLOB":        0xfc,
+	"MYSQL_TYPE_VAR_STRING":  0xfd,
+	"MYSQL_TYPE_STRING":      0xfe,
+	"MYSQL_TYPE_GEOMETRY":    0xff,
+}
 
 func decodePacketType2(data []byte) (*PacketType2, error) {
 	if len(data) < 3 {
@@ -522,7 +551,7 @@ func encodeMySQLResultSet(resultSet *models.MySQLResultSet) ([]byte, error) {
 
 	// Write columns
 	for _, column := range resultSet.Columns {
-		buf.WriteByte(column.Catalog)
+		writeLengthEncodedStrings(buf, column.Catalog)
 		writeLengthEncodedStrings(buf, column.Schema)
 		writeLengthEncodedStrings(buf, column.Table)
 		writeLengthEncodedStrings(buf, column.OrgTable)
@@ -546,8 +575,10 @@ func encodeMySQLResultSet(resultSet *models.MySQLResultSet) ([]byte, error) {
 
 	// Write rows
 	for _, row := range resultSet.Rows {
-		for _, value := range row.Values {
-			writeLengthEncodedStrings(buf, value)
+		for _, value := range row.Columns {
+			if strValue, ok := value.(string); ok {
+				writeLengthEncodedStrings(buf, strValue)
+			}
 		}
 	}
 
@@ -574,7 +605,7 @@ func encodeColumnDefinitionPacket(packet *models.ColumnDefinitionPacket) ([]byte
 	binary.Write(buf, binary.LittleEndian, packet.ColumnLength)
 
 	// Write column type
-	buf.WriteByte(byte(mySQLfieldTypeNames[packet.ColumnType]))
+	buf.WriteByte(columnTypeValues[packet.ColumnType])
 
 	// Write flags and decimals
 	binary.Write(buf, binary.LittleEndian, packet.Flags)
@@ -597,7 +628,11 @@ func encodeRow(row *models.Row) ([]byte, error) {
 
 	// Write each column value as a length-encoded string
 	for _, colValue := range row.Columns {
-		writeLengthEncodedStrings(buf, colValue)
+		if strValue, ok := colValue.(string); ok {
+			writeLengthEncodedStrings(buf, strValue)
+		} else {
+			return nil, fmt.Errorf("column value is not a string")
+		}
 	}
 
 	return buf.Bytes(), nil
@@ -1338,7 +1373,7 @@ func parseColumnDefinitionPacket(b []byte) (*ColumnDefinitionPacket, []byte, err
 	b = b[2:]
 	packet.ColumnLength = binary.LittleEndian.Uint32(b)
 	b = b[4:]
-	if name, ok := mySQLfieldTypeNames[fieldType(b[0])]; ok {
+	if name, ok := mySQLfieldTypeNames[b[0]]; ok {
 		packet.ColumnType = name
 	} else {
 		packet.ColumnType = "unknown"
