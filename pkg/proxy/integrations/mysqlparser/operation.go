@@ -984,17 +984,48 @@ func decodeComStmtPrepareOk(data []byte) (*StmtPrepareOk, error) {
 	}
 
 	offset := 12
+	offset += 4 //Header of packet
 
 	if response.NumParams > 0 {
 		for i := uint16(0); i < response.NumParams; i++ {
-			_, err := readLengthEncodedString(data, &offset) // Catalog
+			columnDef := ColumnDefinition{}
+			var err error
+			columnDef.Catalog, err = readLengthEncodedString(data, &offset)
 			if err != nil {
 				return nil, err
 			}
-			// Skipping remaining fields in parameter definition
-			offset += 13
+			columnDef.Schema, err = readLengthEncodedString(data, &offset)
+			if err != nil {
+				return nil, err
+			}
+			columnDef.Table, err = readLengthEncodedString(data, &offset)
+			if err != nil {
+				return nil, err
+			}
+			columnDef.OrgTable, err = readLengthEncodedString(data, &offset)
+			if err != nil {
+				return nil, err
+			}
+			columnDef.Name, err = readLengthEncodedString(data, &offset)
+			if err != nil {
+				return nil, err
+			}
+			columnDef.OrgName, err = readLengthEncodedString(data, &offset)
+			if err != nil {
+				return nil, err
+			}
+			offset++ //filler
+			columnDef.CharacterSet = binary.LittleEndian.Uint16(data[offset : offset+2])
+			columnDef.ColumnLength = binary.LittleEndian.Uint32(data[offset+2 : offset+6])
+			columnDef.ColumnType = data[offset+6]
+			columnDef.Flags = binary.LittleEndian.Uint16(data[offset+7 : offset+9])
+			columnDef.Decimals = data[offset+9]
+			offset += 10
+			fmt.Println(data[offset])
+			offset += 5 //EOF
+			offset += 1 //filler
 		}
-		offset += 2 // Skip EOF packet
+		offset += 5 //eof
 	}
 
 	for i := uint16(0); i < response.NumColumns; i++ {
