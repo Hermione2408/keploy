@@ -68,11 +68,12 @@ type BoundParameter struct {
 }
 
 type MySQLStmtPrepareOk struct {
-	Status       byte   `yaml:"status"`
-	StatementID  uint32 `yaml:"statement_id"`
-	NumColumns   uint16 `yaml:"num_columns"`
-	NumParams    uint16 `yaml:"num_params"`
-	WarningCount uint16 `yaml:"warning_count"`
+	Status       byte               `yaml:"status"`
+	StatementID  uint32             `yaml:"statement_id"`
+	NumColumns   uint16             `yaml:"num_columns"`
+	NumParams    uint16             `yaml:"num_params"`
+	WarningCount uint16             `yaml:"warning_count"`
+	ColumnDefs   []ColumnDefinition `yaml:"column_definitions"`
 }
 
 type MySQLResultSet struct {
@@ -93,6 +94,20 @@ type ColumnDefinitionPacket struct {
 	Decimals     uint8  `yaml:"decimals"`
 	Filler       uint16 `yaml:"filler"`
 	DefaultValue string `yaml:"default_value"`
+}
+type ColumnDefinition struct {
+	Catalog      string `yaml:"catalog"`
+	Schema       string `yaml:"schema"`
+	Table        string `yaml:"table"`
+	OrgTable     string `yaml:"org_table"`
+	Name         string `yaml:"name"`
+	OrgName      string `yaml:"org_name"`
+	NextLength   uint64 `yaml:"next_length"`
+	CharacterSet uint16 `yaml:"character_set"`
+	ColumnLength uint32 `yaml:"column_length"`
+	ColumnType   byte   `yaml:"column_type"`
+	Flags        uint16 `yaml:"flags"`
+	Decimals     byte   `yaml:"decimals"`
 }
 type Row struct {
 	Columns map[string]interface{} `yaml:"columns"`

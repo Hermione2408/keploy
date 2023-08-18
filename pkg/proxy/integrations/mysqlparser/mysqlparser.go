@@ -171,6 +171,9 @@ func decodeOutgoingMySQL(clientConnId, destConnId int, requestBuffer []byte, cli
 	// startedDecoding := time.Now()
 	startedDecoding := time.Now()
 	firstLoop := true
+	var (
+		mockResponseRead = 0
+	)
 	for {
 		configMocks := h.GetConfigMocks()
 		tcsMocks := h.GetTcsMocks()
@@ -179,9 +182,7 @@ func decodeOutgoingMySQL(clientConnId, destConnId int, requestBuffer []byte, cli
 			mysqlRequests = []models.MySQLRequest{}
 			// mongoResponses = []models.MongoResponse{}
 		)
-		var (
-			mockResponseRead = 0
-		)
+
 		fmt.Println(mysqlRequests)
 		if firstLoop {
 			packet := configMocks[0].Spec.MySqlResponses[0].Message
@@ -214,6 +215,7 @@ func decodeOutgoingMySQL(clientConnId, destConnId int, requestBuffer []byte, cli
 			opr2 := tcsMocks[mockResponseRead].Spec.MySqlResponses[0].Header.PacketType
 			responseBinary, err := encodeToBinary(&handshakeResponseFromConfig, opr2, mockResponseRead+1)
 			_, err = clientConn.Write(responseBinary)
+			mockResponseRead++
 		}
 
 		firstLoop = false

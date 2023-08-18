@@ -85,11 +85,12 @@ type SSLRequestPacket struct {
 }
 
 type StmtPrepareOk struct {
-	Status       byte   `yaml:"status"`
-	StatementID  uint32 `yaml:"statement_id"`
-	NumColumns   uint16 `yaml:"num_columns"`
-	NumParams    uint16 `yaml:"num_params"`
-	WarningCount uint16 `yaml:"warning_count"`
+	Status       byte               `yaml:"status"`
+	StatementID  uint32             `yaml:"statement_id"`
+	NumColumns   uint16             `yaml:"num_columns"`
+	NumParams    uint16             `yaml:"num_params"`
+	WarningCount uint16             `yaml:"warning_count"`
+	ColumnDefs   []ColumnDefinition `yaml:"column_definitions"`
 }
 
 type AuthSwitchRequest struct {
@@ -118,11 +119,13 @@ type ColumnDefinition struct {
 	OrgTable     string `yaml:"org_table"`
 	Name         string `yaml:"name"`
 	OrgName      string `yaml:"org_name"`
-	Charset      uint16 `yaml:"charset"`
+	NextLength   uint64 `yaml:"next_length"`
+	CharacterSet uint16 `yaml:"character_set"`
 	ColumnLength uint32 `yaml:"column_length"`
-	Type         byte   `yaml:"type"`
+	ColumnType   byte   `yaml:"column_type"`
 	Flags        uint16 `yaml:"flags"`
 	Decimals     byte   `yaml:"decimals"`
+	DefaultValue string `yaml:"string"`
 }
 
 type packetDecoder struct {
@@ -931,11 +934,11 @@ func decodeComStmtClose(data []byte) (*ComStmtClosePacket, error) {
 }
 
 func decodeComStmtPrepareOk(data []byte) (*StmtPrepareOk, error) {
-	// ensure the packet is long enough
+	// Ensure the packet is long enough
 	if len(data) < 12 {
 		return nil, errors.New("data length is not enough for COM_STMT_PREPARE_OK")
 	}
-	// construct the response
+
 	response := &StmtPrepareOk{
 		Status:      data[0],
 		StatementID: binary.LittleEndian.Uint32(data[1:5]),
@@ -944,7 +947,93 @@ func decodeComStmtPrepareOk(data []byte) (*StmtPrepareOk, error) {
 		// skip filler byte at data[9]
 		WarningCount: binary.LittleEndian.Uint16(data[10:12]),
 	}
+
+	offset := 12
+
+	for i := uint16(0); i < response.NumColumns; i++ {
+		columnDef := ColumnDefinition{}
+		var n int
+
+		// Catalog
+		columnDef.Catalog, n = readLengthEncodedStrings(data[offset:])
+		offset += n
+
+		// Schema
+		columnDef.Schema, n = readLengthEncodedStrings(data[offset:])
+		offset += n
+
+		// Table
+		columnDef.Table, n = readLengthEncodedStrings(data[offset:])
+		offset += n
+
+		// OrgTable
+		columnDef.OrgTable, n = readLengthEncodedStrings(data[offset:])
+		offset += n
+
+		// Name
+		columnDef.Name, n = readLengthEncodedStrings(data[offset:])
+		offset += n
+
+		// OrgName
+		columnDef.OrgName, n = readLengthEncodedStrings(data[offset:])
+		offset += n
+
+		// Skip length
+		offset++
+
+		// CharacterSet
+		columnDef.CharacterSet = binary.LittleEndian.Uint16(data[offset : offset+2])
+		offset += 2
+
+		// ColumnLength
+		columnDef.ColumnLength = binary.LittleEndian.Uint32(data[offset : offset+4])
+		offset += 4
+
+		// ColumnType
+		columnDef.ColumnType = data[offset]
+		offset++
+
+		// Flags
+		columnDef.Flags = binary.LittleEndian.Uint16(data[offset : offset+2])
+		offset += 2
+
+		// Decimals
+		columnDef.Decimals = data[offset]
+		offset++
+
+		// Skip filler
+		offset += 2
+
+		response.ColumnDefs = append(response.ColumnDefs, columnDef)
+	}
+
 	return response, nil
+}
+
+func readLengthEncodedString(data []byte, offset int) (string, int) {
+	if offset >= len(data) {
+		panic("out of bounds access")
+	}
+	length := int(data[offset])
+	offset++
+	if offset+length > len(data) {
+		panic("out of bounds access")
+	}
+	str := string(data[offset : offset+length])
+	offset += length
+	return str, offset
+}
+
+func ReadLengthEncodedIntegers(data []byte, offset int) (uint64, int) {
+	if data[offset] < 0xfb {
+		return uint64(data[offset]), offset + 1
+	} else if data[offset] == 0xfc {
+		return uint64(binary.LittleEndian.Uint16(data[offset+1 : offset+3])), offset + 3
+	} else if data[offset] == 0xfd {
+		return uint64(data[offset+1]) | uint64(data[offset+2])<<8 | uint64(data[offset+3])<<16, offset + 4
+	} else {
+		return binary.LittleEndian.Uint64(data[offset+1 : offset+9]), offset + 9
+	}
 }
 
 func nullTerminatedString(data []byte) (string, int, error) {
