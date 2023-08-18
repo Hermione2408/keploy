@@ -933,95 +933,111 @@ func decodeComStmtClose(data []byte) (*ComStmtClosePacket, error) {
 	}, nil
 }
 
+func readLengthEncodedString(data []byte, offset *int) (string, error) {
+	if *offset >= len(data) {
+		return "", errors.New("data length is not enough")
+	}
+	var length int
+	firstByte := data[*offset]
+	switch {
+	case firstByte < 0xfb:
+		length = int(firstByte)
+		*offset++
+	case firstByte == 0xfb:
+		*offset++
+		return "", nil
+	case firstByte == 0xfc:
+		if *offset+3 > len(data) {
+			return "", errors.New("data length is not enough 1")
+		}
+		length = int(binary.LittleEndian.Uint16(data[*offset+1 : *offset+3]))
+		*offset += 3
+	case firstByte == 0xfd:
+		if *offset+4 > len(data) {
+			return "", errors.New("data length is not enough 2")
+		}
+		length = int(data[*offset+1]) | int(data[*offset+2])<<8 | int(data[*offset+3])<<16
+		*offset += 4
+	case firstByte == 0xfe:
+		if *offset+9 > len(data) {
+			return "", errors.New("data length is not enough 3")
+		}
+		length = int(binary.LittleEndian.Uint64(data[*offset+1 : *offset+9]))
+		*offset += 9
+	}
+	result := string(data[*offset : *offset+length])
+	*offset += length
+	return result, nil
+}
+
 func decodeComStmtPrepareOk(data []byte) (*StmtPrepareOk, error) {
-	// Ensure the packet is long enough
 	if len(data) < 12 {
 		return nil, errors.New("data length is not enough for COM_STMT_PREPARE_OK")
 	}
 
 	response := &StmtPrepareOk{
-		Status:      data[0],
-		StatementID: binary.LittleEndian.Uint32(data[1:5]),
-		NumColumns:  binary.LittleEndian.Uint16(data[5:7]),
-		NumParams:   binary.LittleEndian.Uint16(data[7:9]),
-		// skip filler byte at data[9]
+		Status:       data[0],
+		StatementID:  binary.LittleEndian.Uint32(data[1:5]),
+		NumColumns:   binary.LittleEndian.Uint16(data[5:7]),
+		NumParams:    binary.LittleEndian.Uint16(data[7:9]),
 		WarningCount: binary.LittleEndian.Uint16(data[10:12]),
 	}
 
 	offset := 12
 
+	if response.NumParams > 0 {
+		for i := uint16(0); i < response.NumParams; i++ {
+			_, err := readLengthEncodedString(data, &offset) // Catalog
+			if err != nil {
+				return nil, err
+			}
+			// Skipping remaining fields in parameter definition
+			offset += 13
+		}
+		offset += 2 // Skip EOF packet
+	}
+
 	for i := uint16(0); i < response.NumColumns; i++ {
 		columnDef := ColumnDefinition{}
-		var n int
-
-		// Catalog
-		columnDef.Catalog, n = readLengthEncodedStrings(data[offset:])
-		offset += n
-
-		// Schema
-		columnDef.Schema, n = readLengthEncodedStrings(data[offset:])
-		offset += n
-
-		// Table
-		columnDef.Table, n = readLengthEncodedStrings(data[offset:])
-		offset += n
-
-		// OrgTable
-		columnDef.OrgTable, n = readLengthEncodedStrings(data[offset:])
-		offset += n
-
-		// Name
-		columnDef.Name, n = readLengthEncodedStrings(data[offset:])
-		offset += n
-
-		// OrgName
-		columnDef.OrgName, n = readLengthEncodedStrings(data[offset:])
-		offset += n
-
-		// Skip length
-		offset++
-
-		// CharacterSet
+		var err error
+		columnDef.Catalog, err = readLengthEncodedString(data, &offset)
+		if err != nil {
+			return nil, err
+		}
+		columnDef.Schema, err = readLengthEncodedString(data, &offset)
+		if err != nil {
+			return nil, err
+		}
+		columnDef.Table, err = readLengthEncodedString(data, &offset)
+		if err != nil {
+			return nil, err
+		}
+		columnDef.OrgTable, err = readLengthEncodedString(data, &offset)
+		if err != nil {
+			return nil, err
+		}
+		columnDef.Name, err = readLengthEncodedString(data, &offset)
+		if err != nil {
+			return nil, err
+		}
+		columnDef.OrgName, err = readLengthEncodedString(data, &offset)
+		if err != nil {
+			return nil, err
+		}
+		offset++ //filler
 		columnDef.CharacterSet = binary.LittleEndian.Uint16(data[offset : offset+2])
-		offset += 2
-
-		// ColumnLength
-		columnDef.ColumnLength = binary.LittleEndian.Uint32(data[offset : offset+4])
-		offset += 4
-
-		// ColumnType
-		columnDef.ColumnType = data[offset]
-		offset++
-
-		// Flags
-		columnDef.Flags = binary.LittleEndian.Uint16(data[offset : offset+2])
-		offset += 2
-
-		// Decimals
-		columnDef.Decimals = data[offset]
-		offset++
-
-		// Skip filler
-		offset += 2
+		columnDef.ColumnLength = binary.LittleEndian.Uint32(data[offset+2 : offset+6])
+		columnDef.ColumnType = data[offset+6]
+		columnDef.Flags = binary.LittleEndian.Uint16(data[offset+7 : offset+9])
+		columnDef.Decimals = data[offset+9]
+		offset += 10
+		fmt.Println(data[offset])
+		offset += 6
 
 		response.ColumnDefs = append(response.ColumnDefs, columnDef)
 	}
 
 	return response, nil
-}
-
-func readLengthEncodedString(data []byte, offset int) (string, int) {
-	if offset >= len(data) {
-		panic("out of bounds access")
-	}
-	length := int(data[offset])
-	offset++
-	if offset+length > len(data) {
-		panic("out of bounds access")
-	}
-	str := string(data[offset : offset+length])
-	offset += length
-	return str, offset
 }
 
 func ReadLengthEncodedIntegers(data []byte, offset int) (uint64, int) {
