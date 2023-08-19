@@ -209,6 +209,9 @@ func decodeOutgoingMySQL(clientConnId, destConnId int, requestBuffer []byte, cli
 			}
 		} else {
 			requestBuffer, _ = util.ReadBytes(clientConn)
+			if len(requestBuffer) == 0 {
+				return
+			}
 			oprRequest, requestHeader, mysqlRequest, err := DecodeMySQLPacket(bytesToMySQLPacket(requestBuffer), logger, destConn)
 			fmt.Println(oprRequest, requestHeader, mysqlRequest, err)
 			handshakeResponseFromConfig := tcsMocks[mockResponseRead].Spec.MySqlResponses[0].Message

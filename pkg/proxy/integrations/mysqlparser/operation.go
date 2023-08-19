@@ -91,6 +91,7 @@ type StmtPrepareOk struct {
 	NumParams    uint16             `yaml:"num_params"`
 	WarningCount uint16             `yaml:"warning_count"`
 	ColumnDefs   []ColumnDefinition `yaml:"column_definitions"`
+	ParamDefs    []ColumnDefinition `yaml:"param_definitions"`
 }
 
 type AuthSwitchRequest struct {
@@ -113,19 +114,20 @@ type ColumnValue struct {
 }
 
 type ColumnDefinition struct {
-	Catalog      string `yaml:"catalog"`
-	Schema       string `yaml:"schema"`
-	Table        string `yaml:"table"`
-	OrgTable     string `yaml:"org_table"`
-	Name         string `yaml:"name"`
-	OrgName      string `yaml:"org_name"`
-	NextLength   uint64 `yaml:"next_length"`
-	CharacterSet uint16 `yaml:"character_set"`
-	ColumnLength uint32 `yaml:"column_length"`
-	ColumnType   byte   `yaml:"column_type"`
-	Flags        uint16 `yaml:"flags"`
-	Decimals     byte   `yaml:"decimals"`
-	DefaultValue string `yaml:"string"`
+	PacketHeader PacketHeader `yaml:"packet_header"`
+	Catalog      string       `yaml:"catalog"`
+	Schema       string       `yaml:"schema"`
+	Table        string       `yaml:"table"`
+	OrgTable     string       `yaml:"org_table"`
+	Name         string       `yaml:"name"`
+	OrgName      string       `yaml:"org_name"`
+	NextLength   uint64       `yaml:"next_length"`
+	CharacterSet uint16       `yaml:"character_set"`
+	ColumnLength uint32       `yaml:"column_length"`
+	ColumnType   byte         `yaml:"column_type"`
+	Flags        uint16       `yaml:"flags"`
+	Decimals     byte         `yaml:"decimals"`
+	DefaultValue string       `yaml:"string"`
 }
 
 type packetDecoder struct {
@@ -534,21 +536,135 @@ func encodeLengthEncodedInteger(n uint64) []byte {
 	return buf
 }
 
-func encodeMySQLStmtPrepareOk(packet *models.MySQLStmtPrepareOk) ([]byte, error) {
-	buf := new(bytes.Buffer)
-	// Write status
-	buf.WriteByte(packet.Status)
-	// Write statement ID
-	binary.Write(buf, binary.LittleEndian, packet.StatementID)
-	// Write number of columns
-	binary.Write(buf, binary.LittleEndian, packet.NumColumns)
-	// Write number of parameters
-	binary.Write(buf, binary.LittleEndian, packet.NumParams)
-	// Write filler byte (0x00)
-	buf.WriteByte(0x00)
-	// Write warning count
-	binary.Write(buf, binary.LittleEndian, packet.WarningCount)
+func writeLengthEncodedString(buf *bytes.Buffer, s string) {
+	length := len(s)
+	switch {
+	case length <= 250:
+		buf.WriteByte(byte(length))
+	case length <= 0xFFFF:
+		buf.WriteByte(0xFC)
+		binary.Write(buf, binary.LittleEndian, uint16(length))
+	case length <= 0xFFFFFF:
+		buf.WriteByte(0xFD)
+		binary.Write(buf, binary.LittleEndian, uint32(length)&0xFFFFFF)
+	default:
+		buf.WriteByte(0xFE)
+		binary.Write(buf, binary.LittleEndian, uint64(length))
+	}
+	buf.WriteString(s)
+}
+
+func encodeColumnDefinition(buf *bytes.Buffer, column *models.ColumnDefinition, seqNum *byte) error {
+	tmpBuf := &bytes.Buffer{}
+	writeLengthEncodedString(tmpBuf, column.Catalog)
+	writeLengthEncodedString(tmpBuf, column.Schema)
+	writeLengthEncodedString(tmpBuf, column.Table)
+	writeLengthEncodedString(tmpBuf, column.OrgTable)
+	writeLengthEncodedString(tmpBuf, column.Name)
+	writeLengthEncodedString(tmpBuf, column.OrgName)
+	tmpBuf.WriteByte(0x0C)
+	if err := binary.Write(tmpBuf, binary.LittleEndian, column.CharacterSet); err != nil {
+		return err
+	}
+	if err := binary.Write(tmpBuf, binary.LittleEndian, column.ColumnLength); err != nil {
+		return err
+	}
+	tmpBuf.WriteByte(column.ColumnType)
+	if err := binary.Write(tmpBuf, binary.LittleEndian, column.Flags); err != nil {
+		return err
+	}
+	tmpBuf.WriteByte(column.Decimals)
+	tmpBuf.Write([]byte{0x00, 0x00})
+
+	colData := tmpBuf.Bytes()
+	length := len(colData)
+
+	// Write packet header with length and sequence number
+	buf.WriteByte(byte(length))
+	buf.WriteByte(byte(length >> 8))
+	buf.WriteByte(byte(length >> 16))
+	buf.WriteByte(*seqNum)
+	*seqNum++
+
+	// Write column definition data
+	buf.Write(colData)
+
+	return nil
+}
+
+func encodeStmtPrepareOk(packet *models.MySQLStmtPrepareOk) ([]byte, error) {
+	buf := &bytes.Buffer{}
+
+	// Encode the Status field
+	if err := binary.Write(buf, binary.LittleEndian, uint8(packet.Status)); err != nil {
+		return nil, err
+	}
+
+	// Encode the StatementID field
+	if err := binary.Write(buf, binary.LittleEndian, packet.StatementID); err != nil {
+		return nil, err
+	}
+
+	// Encode the NumColumns field
+	if err := binary.Write(buf, binary.LittleEndian, uint16(packet.NumColumns)); err != nil {
+		return nil, err
+	}
+
+	// Encode the NumParams field
+	if err := binary.Write(buf, binary.LittleEndian, uint16(packet.NumParams)); err != nil {
+		return nil, err
+	}
+
+	// Encode the WarningCount field
+	if err := binary.Write(buf, binary.LittleEndian, uint16(packet.WarningCount)); err != nil {
+		return nil, err
+	}
+
+	buf.WriteByte(0x00) // Reserved byte
+
+	seqNum := byte(2)
+	for i := uint16(0); i < packet.NumParams; i++ {
+		param := packet.ParamDefs[i]
+		if err := encodeColumnDefinition(buf, &param, &seqNum); err != nil {
+			return nil, err
+		}
+	}
+	if packet.NumParams > 0 {
+		// Write EOF marker for parameter definitions
+		buf.Write([]byte{5, 0, 0, seqNum, 0xFE, 0x00, 0x00, 0x02, 0x00})
+		seqNum++
+	}
+
+	// Encode column definitions
+	for _, col := range packet.ColumnDefs {
+		if err := encodeColumnDefinition(buf, &col, &seqNum); err != nil {
+			return nil, err
+		}
+	}
+
+	if packet.NumColumns > 0 {
+		// Write EOF marker for column definitions
+		buf.Write([]byte{5, 0, 0, seqNum, 0xFE, 0x00, 0x00, 0x02, 0x00})
+		seqNum++
+	}
+
 	return buf.Bytes(), nil
+}
+
+func writeLengthEncodedInteger(buf *bytes.Buffer, val uint64) {
+	switch {
+	case val <= 250:
+		buf.WriteByte(byte(val))
+	case val <= 0xFFFF:
+		buf.WriteByte(0xFC)
+		binary.Write(buf, binary.LittleEndian, uint16(val))
+	case val <= 0xFFFFFF:
+		buf.WriteByte(0xFD)
+		binary.Write(buf, binary.LittleEndian, uint32(val)&0xFFFFFF)
+	default:
+		buf.WriteByte(0xFE)
+		binary.Write(buf, binary.LittleEndian, val)
+	}
 }
 
 func encodeMySQLResultSet(resultSet *models.MySQLResultSet) ([]byte, error) {
@@ -592,38 +708,6 @@ func encodeMySQLResultSet(resultSet *models.MySQLResultSet) ([]byte, error) {
 
 	// Write EOF packet header again
 	buf.Write([]byte{0xfe, 0x00, 0x00, 0x02, 0x00})
-
-	return buf.Bytes(), nil
-}
-
-func encodeColumnDefinitionPacket(packet *models.ColumnDefinitionPacket) ([]byte, error) {
-	buf := new(bytes.Buffer)
-
-	// Write the column attributes
-	writeLengthEncodedStrings(buf, packet.Catalog)
-	writeLengthEncodedStrings(buf, packet.Schema)
-	writeLengthEncodedStrings(buf, packet.Table)
-	writeLengthEncodedStrings(buf, packet.OrgTable)
-	writeLengthEncodedStrings(buf, packet.Name)
-	writeLengthEncodedStrings(buf, packet.OrgName)
-
-	// Write fixed-length fields
-	buf.WriteByte(0x0c)
-	binary.Write(buf, binary.LittleEndian, packet.CharacterSet)
-	binary.Write(buf, binary.LittleEndian, packet.ColumnLength)
-
-	// Write column type
-	buf.WriteByte(columnTypeValues[packet.ColumnType])
-
-	// Write flags and decimals
-	binary.Write(buf, binary.LittleEndian, packet.Flags)
-	buf.WriteByte(byte(packet.Decimals))
-	buf.WriteByte(0x00) // Filler
-
-	// Write default value if available
-	if packet.DefaultValue != "" {
-		writeLengthEncodedStrings(buf, packet.DefaultValue)
-	}
 
 	return buf.Bytes(), nil
 }
@@ -770,7 +854,8 @@ func encodeToBinary(packet interface{}, operation string, sequence int) ([]byte,
 		if !ok {
 			return nil, fmt.Errorf("invalid packet type for HandshakeResponse: expected *HandshakeResponse, got %T", packet)
 		}
-		data, err = encodeMySQLStmtPrepareOk(p)
+		data, err = encodeStmtPrepareOk(p)
+		bypassHeader = true
 	case "RESULT_SET_PACKET":
 		p, ok := packet.(*models.MySQLResultSet)
 		if !ok {
@@ -970,6 +1055,11 @@ func readLengthEncodedString(data []byte, offset *int) (string, error) {
 	return result, nil
 }
 
+type PacketHeader struct {
+	PacketLength     uint8
+	PacketSequenceID uint8
+}
+
 func decodeComStmtPrepareOk(data []byte) (*StmtPrepareOk, error) {
 	if len(data) < 12 {
 		return nil, errors.New("data length is not enough for COM_STMT_PREPARE_OK")
@@ -984,11 +1074,16 @@ func decodeComStmtPrepareOk(data []byte) (*StmtPrepareOk, error) {
 	}
 
 	offset := 12
-	offset += 4 //Header of packet
 
 	if response.NumParams > 0 {
 		for i := uint16(0); i < response.NumParams; i++ {
 			columnDef := ColumnDefinition{}
+			columnHeader := PacketHeader{
+				PacketLength:     data[offset],
+				PacketSequenceID: data[offset+3],
+			}
+			columnDef.PacketHeader = columnHeader
+			offset += 4 //Header of packet
 			var err error
 			columnDef.Catalog, err = readLengthEncodedString(data, &offset)
 			if err != nil {
@@ -1021,51 +1116,57 @@ func decodeComStmtPrepareOk(data []byte) (*StmtPrepareOk, error) {
 			columnDef.Flags = binary.LittleEndian.Uint16(data[offset+7 : offset+9])
 			columnDef.Decimals = data[offset+9]
 			offset += 10
-			fmt.Println(data[offset])
-			offset += 5 //EOF
-			offset += 1 //filler
+			offset += 2 // filler
+			response.ParamDefs = append(response.ParamDefs, columnDef)
 		}
-		offset += 5 //eof
+		offset += 9 //skip EOF packet for Parameter Definition
 	}
 
-	for i := uint16(0); i < response.NumColumns; i++ {
-		columnDef := ColumnDefinition{}
-		var err error
-		columnDef.Catalog, err = readLengthEncodedString(data, &offset)
-		if err != nil {
-			return nil, err
+	if response.NumColumns > 0 {
+		for i := uint16(0); i < response.NumColumns; i++ {
+			columnDef := ColumnDefinition{}
+			columnHeader := PacketHeader{
+				PacketLength:     data[offset],
+				PacketSequenceID: data[offset+3],
+			}
+			columnDef.PacketHeader = columnHeader
+			offset += 4
+			var err error
+			columnDef.Catalog, err = readLengthEncodedString(data, &offset)
+			if err != nil {
+				return nil, err
+			}
+			columnDef.Schema, err = readLengthEncodedString(data, &offset)
+			if err != nil {
+				return nil, err
+			}
+			columnDef.Table, err = readLengthEncodedString(data, &offset)
+			if err != nil {
+				return nil, err
+			}
+			columnDef.OrgTable, err = readLengthEncodedString(data, &offset)
+			if err != nil {
+				return nil, err
+			}
+			columnDef.Name, err = readLengthEncodedString(data, &offset)
+			if err != nil {
+				return nil, err
+			}
+			columnDef.OrgName, err = readLengthEncodedString(data, &offset)
+			if err != nil {
+				return nil, err
+			}
+			offset++ //filler
+			columnDef.CharacterSet = binary.LittleEndian.Uint16(data[offset : offset+2])
+			columnDef.ColumnLength = binary.LittleEndian.Uint32(data[offset+2 : offset+6])
+			columnDef.ColumnType = data[offset+6]
+			columnDef.Flags = binary.LittleEndian.Uint16(data[offset+7 : offset+9])
+			columnDef.Decimals = data[offset+9]
+			offset += 10
+			offset += 2 // filler
+			response.ColumnDefs = append(response.ColumnDefs, columnDef)
 		}
-		columnDef.Schema, err = readLengthEncodedString(data, &offset)
-		if err != nil {
-			return nil, err
-		}
-		columnDef.Table, err = readLengthEncodedString(data, &offset)
-		if err != nil {
-			return nil, err
-		}
-		columnDef.OrgTable, err = readLengthEncodedString(data, &offset)
-		if err != nil {
-			return nil, err
-		}
-		columnDef.Name, err = readLengthEncodedString(data, &offset)
-		if err != nil {
-			return nil, err
-		}
-		columnDef.OrgName, err = readLengthEncodedString(data, &offset)
-		if err != nil {
-			return nil, err
-		}
-		offset++ //filler
-		columnDef.CharacterSet = binary.LittleEndian.Uint16(data[offset : offset+2])
-		columnDef.ColumnLength = binary.LittleEndian.Uint32(data[offset+2 : offset+6])
-		columnDef.ColumnType = data[offset+6]
-		columnDef.Flags = binary.LittleEndian.Uint16(data[offset+7 : offset+9])
-		columnDef.Decimals = data[offset+9]
-		offset += 10
-		fmt.Println(data[offset])
-		offset += 6
-
-		response.ColumnDefs = append(response.ColumnDefs, columnDef)
+		offset += 9 //skip EOF packet for Column Definitions
 	}
 
 	return response, nil

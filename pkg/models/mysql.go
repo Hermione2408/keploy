@@ -74,6 +74,7 @@ type MySQLStmtPrepareOk struct {
 	NumParams    uint16             `yaml:"num_params"`
 	WarningCount uint16             `yaml:"warning_count"`
 	ColumnDefs   []ColumnDefinition `yaml:"column_definitions"`
+	ParamDefs    []ColumnDefinition `yaml:"param_definitions"`
 }
 
 type MySQLResultSet struct {
@@ -95,19 +96,24 @@ type ColumnDefinitionPacket struct {
 	Filler       uint16 `yaml:"filler"`
 	DefaultValue string `yaml:"default_value"`
 }
+type PacketHeader struct {
+	PacketLength     uint8 `yaml:"packet_length"`
+	PacketSequenceId uint8 `yaml:"packet_sequence_id"`
+}
 type ColumnDefinition struct {
-	Catalog      string `yaml:"catalog"`
-	Schema       string `yaml:"schema"`
-	Table        string `yaml:"table"`
-	OrgTable     string `yaml:"org_table"`
-	Name         string `yaml:"name"`
-	OrgName      string `yaml:"org_name"`
-	NextLength   uint64 `yaml:"next_length"`
-	CharacterSet uint16 `yaml:"character_set"`
-	ColumnLength uint32 `yaml:"column_length"`
-	ColumnType   byte   `yaml:"column_type"`
-	Flags        uint16 `yaml:"flags"`
-	Decimals     byte   `yaml:"decimals"`
+	Catalog      string       `yaml:"catalog"`
+	Schema       string       `yaml:"schema"`
+	Table        string       `yaml:"table"`
+	OrgTable     string       `yaml:"org_table"`
+	Name         string       `yaml:"name"`
+	OrgName      string       `yaml:"org_name"`
+	NextLength   uint64       `yaml:"next_length"`
+	CharacterSet uint16       `yaml:"character_set"`
+	ColumnLength uint32       `yaml:"column_length"`
+	ColumnType   byte         `yaml:"column_type"`
+	Flags        uint16       `yaml:"flags"`
+	Decimals     byte         `yaml:"decimals"`
+	PacketHeader PacketHeader `yaml:"packet_header"`
 }
 type Row struct {
 	Columns map[string]interface{} `yaml:"columns"`
