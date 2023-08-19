@@ -796,18 +796,39 @@ func writeLengthEncodedStrings(buf *bytes.Buffer, value string) {
 
 func encodeMySQLOK(packet *models.MySQLOKPacket) ([]byte, error) {
 	buf := new(bytes.Buffer)
+	// Prepare the payload (without the header)
+	payload := new(bytes.Buffer)
 	// Write header (0x00)
-	buf.WriteByte(0x00)
+	payload.WriteByte(0x00)
 	// Write affected rows
-	buf.Write(encodeLengthEncodedInteger(packet.AffectedRows))
+	payload.Write(encodeLengthEncodedInteger(packet.AffectedRows))
 	// Write last insert ID
-	buf.Write(encodeLengthEncodedInteger(packet.LastInsertID))
+	payload.Write(encodeLengthEncodedInteger(packet.LastInsertID))
 	// Write status flags
-	binary.Write(buf, binary.BigEndian, packet.StatusFlags)
+	binary.Write(payload, binary.LittleEndian, packet.StatusFlags)
 	// Write warnings
-	binary.Write(buf, binary.BigEndian, packet.Warnings)
+	binary.Write(payload, binary.LittleEndian, packet.Warnings)
 	// Write info
-	buf.WriteString(packet.Info)
+	if len(packet.Info) > 0 {
+		payload.Write([]byte{0})
+		payload.WriteString(packet.Info)
+	} else if payload.Bytes()[payload.Len()-1] == 0 {
+		// Trim the extra 0 byte
+		payload.Truncate(payload.Len() - 1)
+	}
+
+	// Write header bytes
+	// Write packet length (3 bytes)
+	packetLength := uint32(payload.Len())
+	buf.WriteByte(byte(packetLength))
+	buf.WriteByte(byte(packetLength >> 8))
+	buf.WriteByte(byte(packetLength >> 16))
+	// Write packet sequence number (1 byte)
+	buf.WriteByte(1)
+
+	// Write payload
+	buf.Write(payload.Bytes())
+
 	return buf.Bytes(), nil
 }
 
@@ -888,6 +909,7 @@ func encodeToBinary(packet interface{}, operation string, sequence int) ([]byte,
 			return nil, fmt.Errorf("invalid packet type for HandshakeResponse: expected *HandshakeResponse, got %T", packet)
 		}
 		data, err = encodeMySQLOK(p)
+		bypassHeader = true
 	case "COM_STMT_PREPARE_OK":
 		p, ok := packet.(*models.MySQLStmtPrepareOk)
 		if !ok {
@@ -2004,48 +2026,111 @@ func decodeLengthEncodedString(data []byte) (string, error) {
 	return s, nil
 }
 
+func readLengthEncodedIntegerOff(data []byte, offset *int) (uint64, error) {
+	if *offset >= len(data) {
+		return 0, errors.New("data length is not enough")
+	}
+	var length int
+	firstByte := data[*offset]
+	switch {
+	case firstByte < 0xfb:
+		length = int(firstByte)
+		*offset++
+	case firstByte == 0xfb:
+		*offset++
+		return 0, nil
+	case firstByte == 0xfc:
+		if *offset+3 > len(data) {
+			return 0, errors.New("data length is not enough 1")
+		}
+		length = int(binary.LittleEndian.Uint16(data[*offset+1 : *offset+3]))
+		*offset += 3
+	case firstByte == 0xfd:
+		if *offset+4 > len(data) {
+			return 0, errors.New("data length is not enough 2")
+		}
+		length = int(data[*offset+1]) | int(data[*offset+2])<<8 | int(data[*offset+3])<<16
+		*offset += 4
+	case firstByte == 0xfe:
+		if *offset+9 > len(data) {
+			return 0, errors.New("data length is not enough 3")
+		}
+		length = int(binary.LittleEndian.Uint64(data[*offset+1 : *offset+9]))
+		*offset += 9
+	}
+	result := uint64(length)
+	return result, nil
+}
+
+func readLengthEncodedStringOff(data []byte, offset *int) (string, error) {
+	if *offset >= len(data) {
+		return "", errors.New("data length is not enough")
+	}
+	var length int
+	firstByte := data[*offset]
+	switch {
+	case firstByte < 0xfb:
+		length = int(firstByte)
+		*offset++
+	case firstByte == 0xfb:
+		*offset++
+		return "", nil
+	case firstByte == 0xfc:
+		if *offset+3 > len(data) {
+			return "", errors.New("data length is not enough 1")
+		}
+		length = int(binary.LittleEndian.Uint16(data[*offset+1 : *offset+3]))
+		*offset += 3
+	case firstByte == 0xfd:
+		if *offset+4 > len(data) {
+			return "", errors.New("data length is not enough 2")
+		}
+		length = int(data[*offset+1]) | int(data[*offset+2])<<8 | int(data[*offset+3])<<16
+		*offset += 4
+	case firstByte == 0xfe:
+		if *offset+9 > len(data) {
+			return "", errors.New("data length is not enough 3")
+		}
+		length = int(binary.LittleEndian.Uint64(data[*offset+1 : *offset+9]))
+		*offset += 9
+	}
+	result := string(data[*offset : *offset+length])
+	*offset += length
+	return result, nil
+}
+
 func decodeMySQLOK(data []byte) (*OKPacket, error) {
 	if len(data) < 7 {
 		return nil, fmt.Errorf("OK packet too short")
 	}
 
 	packet := &OKPacket{}
-	var isNull bool
 	var err error
-	var n int
+	var offset int
 
-	packet.AffectedRows, isNull, n, err = decodeLengthEncodedInteger(data)
-	if err != nil || isNull {
-		return nil, fmt.Errorf("failed to decode affected rows: %w", err)
+	// Decode affected rows
+	packet.AffectedRows, err = readLengthEncodedIntegerOff(data, &offset)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode info: %w", err)
 	}
-	data = data[n:]
-
-	packet.LastInsertID, isNull, n, err = decodeLengthEncodedInteger(data)
-	if err != nil || isNull {
-		return nil, fmt.Errorf("failed to decode last insert ID: %w", err)
+	// Decode last insert ID
+	packet.LastInsertID, err = readLengthEncodedIntegerOff(data, &offset)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode info: %w", err)
 	}
-	data = data[n:]
 
-	if len(data) < 4 {
+	if len(data) < offset+4 {
 		return nil, fmt.Errorf("OK packet too short")
 	}
 
-	packet.StatusFlags = binary.LittleEndian.Uint16(data)
-	data = data[2:]
+	packet.StatusFlags = binary.LittleEndian.Uint16(data[offset:])
+	offset += 2
 
-	packet.Warnings = binary.LittleEndian.Uint16(data)
-	data = data[2:]
+	packet.Warnings = binary.LittleEndian.Uint16(data[offset:])
+	offset += 2
 
-	// Check if the data is a length-encoded string or ASCII numbers
-	if data[0] <= 250 {
-		// Length-encoded string
-		packet.Info, err = decodeLengthEncodedString(data)
-		if err != nil {
-			return nil, fmt.Errorf("failed to decode info: %w", err)
-		}
-	} else {
-		// ASCII numbers
-		packet.Info = string(data)
+	if offset < len(data) {
+		packet.Info = string(data[offset+1:])
 	}
 
 	return packet, nil

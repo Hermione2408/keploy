@@ -218,6 +218,9 @@ func decodeOutgoingMySQL(clientConnId, destConnId int, requestBuffer []byte, cli
 				return
 			}
 			oprRequest, requestHeader, mysqlRequest, err := DecodeMySQLPacket(bytesToMySQLPacket(requestBuffer), logger, destConn)
+			if oprRequest == "COM_STMT_CLOSE" {
+				return
+			}
 			fmt.Println(oprRequest, requestHeader, mysqlRequest, err)
 			handshakeResponseFromConfig := tcsMocks[mockResponseRead].Spec.MySqlResponses[0].Message
 			opr2 := tcsMocks[mockResponseRead].Spec.MySqlResponses[0].Header.PacketType
