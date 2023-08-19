@@ -167,14 +167,16 @@ func encodeOutgoingMySql(clientConnId, destConnId int, requestBuffer []byte, cli
 	return
 }
 
+var (
+	mockResponseRead = 0
+)
+
 func decodeOutgoingMySQL(clientConnId, destConnId int, requestBuffer []byte, clientConn, destConn net.Conn, h *hooks.Hook, started time.Time, readRequestDelay time.Duration, logger *zap.Logger) {
 	// startedDecoding := time.Now()
 	startedDecoding := time.Now()
 	firstLoop := true
 	doHandshakeAgain := false
-	var (
-		mockResponseRead = 0
-	)
+
 	for {
 		configMocks := h.GetConfigMocks()
 		tcsMocks := h.GetTcsMocks()
@@ -220,16 +222,9 @@ func decodeOutgoingMySQL(clientConnId, destConnId int, requestBuffer []byte, cli
 			handshakeResponseFromConfig := tcsMocks[mockResponseRead].Spec.MySqlResponses[0].Message
 			opr2 := tcsMocks[mockResponseRead].Spec.MySqlResponses[0].Header.PacketType
 			responseBinary, err := encodeToBinary(&handshakeResponseFromConfig, opr2, mockResponseRead+1)
-			if opr2 == "RESULT_SET_PACKET" {
-				mockstr := "\x01\x00\x00\x01\x043\x00\x00\x02\x03def\vshorturl_db\aurl_map\aurl_map\x02id\x02id\f-\x00 \x00\x00\x00\xfe\x03P\x00\x00\x00G\x00\x00\x03\x03def\vshorturl_db\aurl_map\aurl_map\fredirect_url\fredirect_url\f-\x00X\x02\x00\x00\xfd\x05P\x00\x00\x00C\x00\x00\x04\x03def\vshorturl_db\aurl_map\aurl_map\ncreated_at\ncreated_at\f?\x00\x13\x00\x00\x00\a\x81\x10\x00\x00\x00C\x00\x00\x05\x03def\vshorturl_db\aurl_map\aurl_map\nupdated_at\nupdated_at\f?\x00\x13\x00\x00\x00\a\x81\x10\x00\x00\x00\x05\x00\x00\x06\xfe\x00\x00\x02\x003\x00\x00\a\x00\x00\bcffgJto2\x17https://www.example.com\a\xe7\a\b\x04\x12\x1a\x0f\a\xe7\a\b\x13\a\x02$\x05\x00\x00\b\xfe\x00\x00\x02\x00"
-				binaryBi := []byte(mockstr)
-				_, err = clientConn.Write(binaryBi)
 
-				//doHandshakeAgain = true
-			} else {
-				_, err = clientConn.Write(responseBinary)
+			_, err = clientConn.Write(responseBinary)
 
-			}
 			mockResponseRead++
 		}
 
