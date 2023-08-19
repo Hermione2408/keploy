@@ -670,20 +670,122 @@ func writeLengthEncodedInteger(buf *bytes.Buffer, val uint64) {
 		binary.Write(buf, binary.LittleEndian, val)
 	}
 }
+func encodeTimestamp(t time.Time) []byte {
+	var buf bytes.Buffer
+	year, month, day := t.Date()
+	hour, minute, second := t.Clock()
+	microsecond := t.Nanosecond() / 1000
+
+	if year == 0 && month == 0 && day == 0 && hour == 0 && minute == 0 && second == 0 && microsecond == 0 {
+		buf.WriteByte(0)
+	} else if hour == 0 && minute == 0 && second == 0 && microsecond == 0 {
+		buf.WriteByte(4)
+		binary.Write(&buf, binary.LittleEndian, uint16(year))
+		buf.WriteByte(byte(month))
+		buf.WriteByte(byte(day))
+	} else if microsecond == 0 {
+		buf.WriteByte(7)
+		binary.Write(&buf, binary.LittleEndian, uint16(year))
+		buf.WriteByte(byte(month))
+		buf.WriteByte(byte(day))
+		buf.WriteByte(byte(hour))
+		buf.WriteByte(byte(minute))
+		buf.WriteByte(byte(second))
+	} else {
+		buf.WriteByte(11)
+		binary.Write(&buf, binary.LittleEndian, uint16(year))
+		buf.WriteByte(byte(month))
+		buf.WriteByte(byte(day))
+		buf.WriteByte(byte(hour))
+		buf.WriteByte(byte(minute))
+		buf.WriteByte(byte(second))
+		binary.Write(&buf, binary.LittleEndian, uint32(microsecond))
+	}
+
+	return buf.Bytes()
+}
+func encodeRow(row *models.Row, columnValues []models.RowColumnDefinition) ([]byte, error) {
+	var buf bytes.Buffer
+
+	// Write the header
+	//binary.Write(&buf, binary.LittleEndian, uint32(row.Header.PacketLength))
+	//buf.WriteByte(row.Header.PacketSequenceId)
+
+	for _, column := range columnValues {
+		value := column.Value
+		switch fieldType(column.Type) {
+		case fieldTypeTimestamp:
+			switch v := column.Value.(type) {
+			case time.Time:
+				// Handle as time.Time
+				year, month, day := v.Date()
+				hour, minute, second := v.Clock()
+				microsecond := v.Nanosecond() / 1000
+
+				if year == 0 && month == 0 && day == 0 && hour == 0 && minute == 0 && second == 0 && microsecond == 0 {
+					buf.WriteByte(0)
+				} else if hour == 0 && minute == 0 && second == 0 && microsecond == 0 {
+					buf.WriteByte(4)
+					binary.Write(&buf, binary.LittleEndian, uint16(year))
+					buf.WriteByte(byte(month))
+					buf.WriteByte(byte(day))
+				} else if microsecond == 0 {
+					buf.WriteByte(7)
+					binary.Write(&buf, binary.LittleEndian, uint16(year))
+					buf.WriteByte(byte(month))
+					buf.WriteByte(byte(day))
+					buf.WriteByte(byte(hour))
+					buf.WriteByte(byte(minute))
+					buf.WriteByte(byte(second))
+				} else {
+					buf.WriteByte(11)
+					binary.Write(&buf, binary.LittleEndian, uint16(year))
+					buf.WriteByte(byte(month))
+					buf.WriteByte(byte(day))
+					buf.WriteByte(byte(hour))
+					buf.WriteByte(byte(minute))
+					buf.WriteByte(byte(second))
+					binary.Write(&buf, binary.LittleEndian, uint32(microsecond))
+				}
+				// ... rest of the code as before
+			case string:
+				// If the value is a string, try to parse it into a time.Time
+				t, err := time.Parse(time.RFC3339, v)
+				if err != nil {
+					return nil, fmt.Errorf("failed to parse timestamp value: %v", err)
+				}
+				buf.Write(encodeTimestamp(t))
+			}
+		default:
+			strValue, ok := value.(string)
+			if !ok {
+				return nil, errors.New("could not convert value to string")
+			}
+			// Write a length-encoded integer for the string length
+			writeLengthEncodedInteger(&buf, uint64(len(strValue)))
+			// Write the string
+			buf.WriteString(strValue)
+		}
+	}
+
+	return buf.Bytes(), nil
+}
 
 func encodeMySQLResultSet(resultSet *models.MySQLResultSet) ([]byte, error) {
 	buf := new(bytes.Buffer)
+	sequenceID := byte(1)
+	buf.Write([]byte{0x01, 0x00, 0x00, 0x01})
 
 	// Write column count
 	writeLengthEncodedInteger(buf, uint64(len(resultSet.Columns)))
 
 	if len(resultSet.Columns) > 0 {
-
 		for _, column := range resultSet.Columns {
+			sequenceID++
 			buf.WriteByte(byte(column.PacketHeader.PacketLength))
 			buf.WriteByte(byte(column.PacketHeader.PacketLength >> 8))
 			buf.WriteByte(byte(column.PacketHeader.PacketLength >> 16))
-			buf.WriteByte(byte(column.PacketHeader.PacketSequenceId))
+			buf.WriteByte(sequenceID)
 
 			writeLengthEncodedString(buf, column.Catalog)
 			writeLengthEncodedString(buf, column.Schema)
@@ -698,63 +800,26 @@ func encodeMySQLResultSet(resultSet *models.MySQLResultSet) ([]byte, error) {
 			binary.Write(buf, binary.LittleEndian, column.Flags)
 			buf.WriteByte(column.Decimals)
 			buf.Write([]byte{0x00, 0x00}) // Filler
-
 		}
 	}
+	sequenceID++
 	// Write EOF packet header
-	buf.Write([]byte{5, 0, 0, 6, 0xFE, 0x00, 0x00, 0x02, 0x00})
+	buf.Write([]byte{5, 0, 0, sequenceID, 0xFE, 0x00, 0x00, 0x02, 0x00})
+	buf.Write([]byte{0x00, 0x00}) // two extra bytes after header
 
 	// Write rows
 	for _, row := range resultSet.Rows {
+		sequenceID++
 		buf.WriteByte(byte(row.Header.PacketLength))
-		buf.WriteByte(byte(row.Header.PacketSequenceId))
+		buf.WriteByte(sequenceID)
 		buf.Write([]byte{0x00, 0x00}) // two extra bytes after header
 
 		bytes, _ := encodeRow(row, row.Columns)
 		buf.Write(bytes)
 	}
-
+	sequenceID++
 	// Write EOF packet header again
-	buf.Write([]byte{5, 0, 0, 11, 0xFE, 0x00, 0x00, 0x02, 0x00})
-
-	return buf.Bytes(), nil
-}
-
-func encodeRow(row *models.Row, columnValues []models.RowColumnDefinition) ([]byte, error) {
-	var buf bytes.Buffer
-
-	// Write the header
-	binary.Write(&buf, binary.LittleEndian, uint32(row.Header.PacketLength))
-	buf.WriteByte(row.Header.PacketSequenceId)
-
-	for _, column := range columnValues {
-		switch fieldType(column.Type) {
-		case fieldTypeTimestamp:
-			timestamp, ok := column.Value.(string)
-			if !ok {
-				return nil, errors.New("could not convert value to string")
-			}
-			t, err := time.Parse(time.RFC3339, timestamp)
-			if err != nil {
-				return nil, err
-			}
-			// Convert to the MySQL timestamp format: YYYYMMDDHHMMSS
-			mysqlTimestamp := t.Format("20060102150405")
-			// Write a length-encoded integer for the string length
-			writeLengthEncodedInteger(&buf, uint64(len(mysqlTimestamp)))
-			// Write the timestamp string
-			buf.WriteString(mysqlTimestamp)
-		default:
-			value, ok := column.Value.(string)
-			if !ok {
-				return nil, errors.New("could not convert value to string")
-			}
-			// Write a length-encoded integer for the string length
-			writeLengthEncodedInteger(&buf, uint64(len(value)))
-			// Write the string
-			buf.WriteString(value)
-		}
-	}
+	buf.Write([]byte{5, 0, 0, sequenceID, 0xFE, 0x00, 0x00, 0x02, 0x00})
 
 	return buf.Bytes(), nil
 }
@@ -891,6 +956,7 @@ func encodeToBinary(packet interface{}, operation string, sequence int) ([]byte,
 			return nil, fmt.Errorf("invalid packet for result set")
 		}
 		data, err = encodeMySQLResultSet(p)
+		bypassHeader = true
 	default:
 		return nil, errors.New("unknown operation type")
 	}
