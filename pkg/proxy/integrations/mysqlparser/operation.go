@@ -1611,13 +1611,25 @@ func parseRow(b []byte, columnDefinitions []*ColumnDefinition) (*Row, []byte, er
 		// Check the column type
 		switch fieldType(columnDef.ColumnType) {
 		case fieldTypeTimestamp:
-			if len(b) < 8 {
-				return nil, nil, fmt.Errorf("byte slice too short for timestamps")
+			dataLength := int(b[0])
+			b = b[1:] // Advance the buffer to the start of the encoded timestamp data
+
+			if dataLength < 4 || len(b) < dataLength {
+				return nil, nil, fmt.Errorf("invalid timestamp data length")
 			}
-			unixTime := binary.BigEndian.Uint64(b[:8])
+
+			// Decode the year, month, day, hour, minute, second
+			year := binary.LittleEndian.Uint16(b[:2])
+			month := uint8(b[2])
+			day := uint8(b[3])
+			hour := uint8(b[4])
+			minute := uint8(b[5])
+			second := uint8(b[6])
+
 			colValue.Type = fieldTypeTimestamp
-			colValue.Value = time.Unix(0, int64(unixTime)).Format(time.RFC3339)
-			length = 8
+			colValue.Value = fmt.Sprintf("%04d-%02d-%02d %02d:%02d:%02d", year, month, day, hour, minute, second)
+			length = dataLength // Including the initial byte for dataLength
+
 		case fieldTypeInt24, fieldTypeLong:
 			colValue.Type = fieldType(columnDef.ColumnType)
 			colValue.Value = int32(binary.LittleEndian.Uint32(b[:4]))
