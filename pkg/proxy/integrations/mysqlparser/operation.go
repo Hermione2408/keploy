@@ -594,7 +594,7 @@ func encodeColumnDefinition(buf *bytes.Buffer, column *models.ColumnDefinition, 
 
 func encodeStmtPrepareOk(packet *models.MySQLStmtPrepareOk) ([]byte, error) {
 	buf := &bytes.Buffer{}
-
+	buf.Write([]byte{0x0C, 0x00, 0x00, 0x01})
 	// Encode the Status field
 	if err := binary.Write(buf, binary.LittleEndian, uint8(packet.Status)); err != nil {
 		return nil, err
