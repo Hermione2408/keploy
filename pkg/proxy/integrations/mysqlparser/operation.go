@@ -104,8 +104,8 @@ type RowDataPacket struct {
 }
 
 type ResultSet struct {
-	Columns []*ColumnDefinitionPacket `yaml:"columns"`
-	Rows    []*Row                    `yaml:"rows"`
+	Columns []*ColumnDefinition `yaml:"columns"`
+	Rows    []*Row              `yaml:"rows"`
 }
 
 type ColumnValue struct {
@@ -128,6 +128,21 @@ type ColumnDefinition struct {
 	Flags        uint16       `yaml:"flags"`
 	Decimals     byte         `yaml:"decimals"`
 	DefaultValue string       `yaml:"string"`
+}
+type ColumnDefinitionPacket struct {
+	Catalog      string `yaml:"catalog"`
+	Schema       string `yaml:"schema"`
+	Table        string `yaml:"table"`
+	OrgTable     string `yaml:"org_table"`
+	Name         string `yaml:"name"`
+	OrgName      string `yaml:"org_name"`
+	CharacterSet uint16 `yaml:"character_set"`
+	ColumnLength uint32 `yaml:"column_length"`
+	ColumnType   string `yaml:"column_type"`
+	Flags        uint16 `yaml:"flags"`
+	Decimals     uint8  `yaml:"decimals"`
+	Filler       uint16 `yaml:"filler"`
+	DefaultValue string `yaml:"default_value"`
 }
 
 type packetDecoder struct {
@@ -174,22 +189,6 @@ type mysqlField struct {
 
 type Row struct {
 	Columns map[string]interface{} `yaml:"columns"`
-}
-
-type ColumnDefinitionPacket struct {
-	Catalog      string `yaml:"catalog"`
-	Schema       string `yaml:"schema"`
-	Table        string `yaml:"table"`
-	OrgTable     string `yaml:"org_table"`
-	Name         string `yaml:"name"`
-	OrgName      string `yaml:"org_name"`
-	CharacterSet uint16 `yaml:"character_set"`
-	ColumnLength uint32 `yaml:"column_length"`
-	ColumnType   string `yaml:"column_type"`
-	Flags        uint16 `yaml:"flags"`
-	Decimals     uint8  `yaml:"decimals"`
-	Filler       uint16 `yaml:"filler"`
-	DefaultValue string `yaml:"default_value"`
 }
 
 type ResultsetRowPacket struct {
@@ -1493,7 +1492,7 @@ func ReadLengthEncodedString(b []byte) (string, int) {
 	return strValue, n + length
 }
 
-func parseRow(b []byte, columnDefinitions []*ColumnDefinitionPacket) (*Row, []byte, error) {
+func parseRow(b []byte, columnDefinitions []*ColumnDefinition) (*Row, []byte, error) {
 	row := &Row{
 		Columns: make(map[string]interface{}),
 	}
@@ -1520,24 +1519,24 @@ func parseRow(b []byte, columnDefinitions []*ColumnDefinitionPacket) (*Row, []by
 		var value interface{}
 		var length int
 
-		switch column.ColumnType {
-		case "fieldTypeTimestamp":
+		switch fieldType(column.ColumnType) {
+		case fieldTypeTimestamp:
 			if len(b) < 8 {
 				return nil, nil, fmt.Errorf("byte slice too short for timestamps")
 			}
 			unixTime := binary.BigEndian.Uint64(b[:8])
 			value = time.Unix(0, int64(unixTime)).Format(time.RFC3339)
 			length = 8
-		case "fieldTypeInt24", "fieldTypeLong":
+		case fieldTypeInt24, fieldTypeLong:
 			value = int32(binary.LittleEndian.Uint32(b[:4]))
 			length = 4
-		case "fieldTypeLongLong":
+		case fieldTypeLongLong:
 			value = int64(binary.LittleEndian.Uint64(b[:8]))
 			length = 8
-		case "fieldTypeFloat":
+		case fieldTypeFloat:
 			value = math.Float32frombits(binary.LittleEndian.Uint32(b[:4]))
 			length = 4
-		case "fieldTypeDouble":
+		case fieldTypeDouble:
 			value = math.Float64frombits(binary.LittleEndian.Uint64(b[:8]))
 			length = 8
 		default:
@@ -1570,52 +1569,58 @@ func parseRow(b []byte, columnDefinitions []*ColumnDefinitionPacket) (*Row, []by
 	return row, b, nil
 }
 
-func parseResultSet(b []byte) (interface{}, error) {
-	allColumns := make([]*ColumnDefinitionPacket, 0)
-	allRows := make([]*Row, 0)
+func parseResultSet(b []byte) (*ResultSet, error) {
+	columns := make([]*ColumnDefinition, 0)
+	rows := make([]*Row, 0)
 
 	var err error
 
-	for len(b) > 4 {
-		// The first packet is the column count packet
-		columnCount, n := readLengthEncodedIntegers(b)
-		b = b[n:]
-		// Parse the column
-		columns := make([]*ColumnDefinitionPacket, 0)
-		for i := uint64(0); i < columnCount; i++ {
-			var columnPacket *ColumnDefinitionPacket
-			columnPacket, b, err = parseColumnDefinitionPacket(b)
-			if err != nil {
-				return nil, err
-			}
-			columns = append(columns, columnPacket)
-		}
-		allColumns = append(allColumns, columns...)
+	// Parse the column count packet
+	columnCount, _, n := readLengthEncodedInteger(b)
+	b = b[n:]
 
-		// Parse the rows
-		for len(b) > 4 && !bytes.Equal(b[:4], []byte{0xfe, 0x00, 0x00, 0x02, 0x00}) {
-			var row *Row
-			row, b, err = parseRow(b, columns)
-			if err != nil {
-				return nil, err
-			}
-			allRows = append(allRows, row)
+	// Parse the columns
+	for i := uint64(0); i < columnCount; i++ {
+		var columnPacket *ColumnDefinition
+		columnPacket, b, err = parseColumnDefinitionPacket(b)
+		if err != nil {
+			return nil, err
 		}
+		columns = append(columns, columnPacket)
 	}
+
+	// Parse the EOF packet after the columns
+	b = b[9:]
+
+	// Parse the rows
+	for len(b) > 4 && !bytes.Equal(b[:4], []byte{0xfe, 0x00, 0x00, 0x02, 0x00}) {
+		var row *Row
+		row, b, err = parseRow(b, columns)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, row)
+	}
+
+	// Remove EOF packet of the rows
+	b = b[9:]
+
 	resultSet := &ResultSet{
-		Columns: allColumns,
-		Rows:    allRows,
+		Columns: columns,
+		Rows:    rows,
 	}
 
 	return resultSet, err
 }
 
-func parseColumnDefinitionPacket(b []byte) (*ColumnDefinitionPacket, []byte, error) {
-	packet := &ColumnDefinitionPacket{}
+func parseColumnDefinitionPacket(b []byte) (*ColumnDefinition, []byte, error) {
+	packet := &ColumnDefinition{}
 	var n int
 	var m int
 
-	// Skip the first 4 bytes (packet header)
+	// Read packet header
+	packet.PacketHeader.PacketLength = uint8(readUint24(b[:3]))
+	packet.PacketHeader.PacketSequenceID = uint8(b[3])
 	b = b[4:]
 
 	packet.Catalog, n = readLengthEncodedStrings(b)
@@ -1635,16 +1640,11 @@ func parseColumnDefinitionPacket(b []byte) (*ColumnDefinitionPacket, []byte, err
 	b = b[2:]
 	packet.ColumnLength = binary.LittleEndian.Uint32(b)
 	b = b[4:]
-	if name, ok := mySQLfieldTypeNames[b[0]]; ok {
-		packet.ColumnType = name
-	} else {
-		packet.ColumnType = "unknown"
-	}
+	packet.ColumnType = b[0]
 	b = b[1:]
-
 	packet.Flags = binary.LittleEndian.Uint16(b)
 	b = b[2:]
-	packet.Decimals = uint8(b[0])
+	packet.Decimals = b[0]
 	b = b[2:] // Skip filler
 	if len(b) > 0 {
 		packet.DefaultValue, m = readLengthEncodedStrings(b)
