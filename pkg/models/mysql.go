@@ -1,5 +1,7 @@
 package models
 
+type fieldType byte
+
 type MySQLPacketHeader struct {
 	PacketLength uint32 `json:"packet_length" yaml:"packet_length"`
 	PacketNumber uint8  `json:"packet_number" yaml:"packet_number"`
@@ -10,7 +12,11 @@ type MySQLRequest struct {
 	Message   interface{}        `json:"message" yaml:"message"`
 	ReadDelay int64              `json:"read_delay,omitempty"`
 }
-
+type RowColumnDefinition struct {
+	Type  fieldType   `yaml:"type"`
+	Name  string      `yaml:"name"`
+	Value interface{} `yaml:"value"`
+}
 type MySQLResponse struct {
 	Header    *MySQLPacketHeader `json:"header" yaml:"header"`
 	Message   interface{}        `json:"message" yaml:"message"`
@@ -78,8 +84,8 @@ type MySQLStmtPrepareOk struct {
 }
 
 type MySQLResultSet struct {
-	Columns []*ColumnDefinitionPacket `yaml:"columns"`
-	Rows    []*Row                    `yaml:"rows"`
+	Columns []*ColumnDefinition `yaml:"columns"`
+	Rows    []*Row              `yaml:"rows"`
 }
 type ColumnDefinitionPacket struct {
 	Catalog      string `yaml:"catalog"`
@@ -100,6 +106,10 @@ type PacketHeader struct {
 	PacketLength     uint8 `yaml:"packet_length"`
 	PacketSequenceId uint8 `yaml:"packet_sequence_id"`
 }
+type RowHeader struct {
+	PacketLength     uint8 `yaml:"packet_length"`
+	PacketSequenceId uint8 `yaml:"packet_sequence_id"`
+}
 type ColumnDefinition struct {
 	Catalog      string       `yaml:"catalog"`
 	Schema       string       `yaml:"schema"`
@@ -115,8 +125,10 @@ type ColumnDefinition struct {
 	Decimals     byte         `yaml:"decimals"`
 	PacketHeader PacketHeader `yaml:"packet_header"`
 }
+
 type Row struct {
-	Columns map[string]interface{} `yaml:"columns"`
+	Header  RowHeader             `yaml:"header"`
+	Columns []RowColumnDefinition `yaml:"row_column_definition"`
 }
 
 type MySQLOKPacket struct {

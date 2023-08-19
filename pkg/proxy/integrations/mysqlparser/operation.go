@@ -10,7 +10,6 @@ import (
 	"math"
 	"net"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -186,9 +185,15 @@ type mysqlField struct {
 	decimals  byte      `yaml:"decimals"`
 	charSet   uint8     `yaml:"char_set"`
 }
+type RowColumnDefinition struct {
+	Type  fieldType   `yaml:"type"`
+	Name  string      `yaml:"name"`
+	Value interface{} `yaml:"value"`
+}
 
 type Row struct {
-	Columns map[string]interface{} `yaml:"columns"`
+	Header  RowHeader             `yaml:"header"`
+	Columns []RowColumnDefinition `yaml:"row_column_definition"`
 }
 
 type ResultsetRowPacket struct {
@@ -670,59 +675,84 @@ func encodeMySQLResultSet(resultSet *models.MySQLResultSet) ([]byte, error) {
 	buf := new(bytes.Buffer)
 
 	// Write column count
-	writeLengthEncodedIntegers(buf, uint64(len(resultSet.Columns)))
+	writeLengthEncodedInteger(buf, uint64(len(resultSet.Columns)))
 
-	// Write columns
-	for _, column := range resultSet.Columns {
-		writeLengthEncodedStrings(buf, column.Catalog)
-		writeLengthEncodedStrings(buf, column.Schema)
-		writeLengthEncodedStrings(buf, column.Table)
-		writeLengthEncodedStrings(buf, column.OrgTable)
-		writeLengthEncodedStrings(buf, column.Name)
-		writeLengthEncodedStrings(buf, column.OrgName)
-		buf.WriteByte(0x0c) // Length of the fixed-length fields (12 bytes)
-		binary.Write(buf, binary.LittleEndian, column.CharacterSet)
-		binary.Write(buf, binary.LittleEndian, column.ColumnLength)
-		buf.WriteByte(columnTypeValues[column.ColumnType])
-		binary.Write(buf, binary.LittleEndian, column.Flags)
-		buf.WriteByte(column.Decimals)
-		buf.Write([]byte{0x00, 0x00}) // Filler
+	if len(resultSet.Columns) > 0 {
 
-		if column.DefaultValue != "" {
-			writeLengthEncodedStrings(buf, column.DefaultValue)
+		for _, column := range resultSet.Columns {
+			buf.WriteByte(byte(column.PacketHeader.PacketLength))
+			buf.WriteByte(byte(column.PacketHeader.PacketLength >> 8))
+			buf.WriteByte(byte(column.PacketHeader.PacketLength >> 16))
+			buf.WriteByte(byte(column.PacketHeader.PacketSequenceId))
+
+			writeLengthEncodedString(buf, column.Catalog)
+			writeLengthEncodedString(buf, column.Schema)
+			writeLengthEncodedString(buf, column.Table)
+			writeLengthEncodedString(buf, column.OrgTable)
+			writeLengthEncodedString(buf, column.Name)
+			writeLengthEncodedString(buf, column.OrgName)
+			buf.WriteByte(0x0c) // Length of the fixed-length fields (12 bytes)
+			binary.Write(buf, binary.LittleEndian, column.CharacterSet)
+			binary.Write(buf, binary.LittleEndian, column.ColumnLength)
+			buf.WriteByte(column.ColumnType)
+			binary.Write(buf, binary.LittleEndian, column.Flags)
+			buf.WriteByte(column.Decimals)
+			buf.Write([]byte{0x00, 0x00}) // Filler
+
 		}
 	}
-
 	// Write EOF packet header
-	buf.Write([]byte{0xfe, 0x00, 0x00, 0x02, 0x00})
+	buf.Write([]byte{5, 0, 0, 6, 0xFE, 0x00, 0x00, 0x02, 0x00})
 
 	// Write rows
 	for _, row := range resultSet.Rows {
-		for _, value := range row.Columns {
-			if strValue, ok := value.(string); ok {
-				writeLengthEncodedStrings(buf, strValue)
-			}
-		}
+		buf.WriteByte(byte(row.Header.PacketLength))
+		buf.WriteByte(byte(row.Header.PacketSequenceId))
+		buf.Write([]byte{0x00, 0x00}) // two extra bytes after header
+
+		bytes, _ := encodeRow(row, row.Columns)
+		buf.Write(bytes)
 	}
 
 	// Write EOF packet header again
-	buf.Write([]byte{0xfe, 0x00, 0x00, 0x02, 0x00})
+	buf.Write([]byte{5, 0, 0, 11, 0xFE, 0x00, 0x00, 0x02, 0x00})
 
 	return buf.Bytes(), nil
 }
 
-func encodeRow(row *models.Row) ([]byte, error) {
-	buf := new(bytes.Buffer)
+func encodeRow(row *models.Row, columnValues []models.RowColumnDefinition) ([]byte, error) {
+	var buf bytes.Buffer
 
-	// Write the number of columns
-	writeLengthEncodedIntegers(buf, uint64(len(row.Columns)))
+	// Write the header
+	binary.Write(&buf, binary.LittleEndian, uint32(row.Header.PacketLength))
+	buf.WriteByte(row.Header.PacketSequenceId)
 
-	// Write each column value as a length-encoded string
-	for _, colValue := range row.Columns {
-		if strValue, ok := colValue.(string); ok {
-			writeLengthEncodedStrings(buf, strValue)
-		} else {
-			return nil, fmt.Errorf("column value is not a string")
+	for _, column := range columnValues {
+		switch fieldType(column.Type) {
+		case fieldTypeTimestamp:
+			timestamp, ok := column.Value.(string)
+			if !ok {
+				return nil, errors.New("could not convert value to string")
+			}
+			t, err := time.Parse(time.RFC3339, timestamp)
+			if err != nil {
+				return nil, err
+			}
+			// Convert to the MySQL timestamp format: YYYYMMDDHHMMSS
+			mysqlTimestamp := t.Format("20060102150405")
+			// Write a length-encoded integer for the string length
+			writeLengthEncodedInteger(&buf, uint64(len(mysqlTimestamp)))
+			// Write the timestamp string
+			buf.WriteString(mysqlTimestamp)
+		default:
+			value, ok := column.Value.(string)
+			if !ok {
+				return nil, errors.New("could not convert value to string")
+			}
+			// Write a length-encoded integer for the string length
+			writeLengthEncodedInteger(&buf, uint64(len(value)))
+			// Write the string
+			buf.WriteString(value)
 		}
 	}
 
@@ -1055,8 +1085,12 @@ func readLengthEncodedString(data []byte, offset *int) (string, error) {
 }
 
 type PacketHeader struct {
-	PacketLength     uint8
-	PacketSequenceID uint8
+	PacketLength     uint8 `yaml:"packet_length"`
+	PacketSequenceID uint8 `yaml:"packet_sequence_id"`
+}
+type RowHeader struct {
+	PacketLength int   `yaml:"packet_length"`
+	SequenceID   uint8 `yaml:"sequence_id"`
 }
 
 func decodeComStmtPrepareOk(data []byte) (*StmtPrepareOk, error) {
@@ -1493,79 +1527,68 @@ func ReadLengthEncodedString(b []byte) (string, int) {
 }
 
 func parseRow(b []byte, columnDefinitions []*ColumnDefinition) (*Row, []byte, error) {
-	row := &Row{
-		Columns: make(map[string]interface{}),
+	row := &Row{}
+
+	packetLength := int(b[0])
+	sequenceID := b[3]
+	rowHeader := RowHeader{
+		PacketLength: packetLength,
+		SequenceID:   sequenceID,
 	}
-
-	// Check for EOF marker at the start of b and skip it
-	EOFMarker := []byte{0x05, 0x00, 0x00, 0x06, 0xfe, 0x00, 0x00, 0x02, 0x00}
-	if len(b) >= 9 && bytes.Equal(b[:9], EOFMarker) {
-		b = b[9:]
-	} else {
-		return nil, nil, nil
-	}
-	//server status
-
-	skip, err := strconv.Atoi(string(b[0]))
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to convert byte to integer: %v", err)
-	}
-
-	// Skip the bytes
-	b = b[skip:]
-
-	// Process each column
-	for _, column := range columnDefinitions {
-		var value interface{}
+	fmt.Println(rowHeader)
+	b = b[4:]
+	b = b[2:]
+	for _, columnDef := range columnDefinitions {
+		var colValue RowColumnDefinition
 		var length int
 
-		switch fieldType(column.ColumnType) {
+		// Check the column type
+		switch fieldType(columnDef.ColumnType) {
 		case fieldTypeTimestamp:
 			if len(b) < 8 {
 				return nil, nil, fmt.Errorf("byte slice too short for timestamps")
 			}
 			unixTime := binary.BigEndian.Uint64(b[:8])
-			value = time.Unix(0, int64(unixTime)).Format(time.RFC3339)
+			colValue.Type = fieldTypeTimestamp
+			colValue.Value = time.Unix(0, int64(unixTime)).Format(time.RFC3339)
 			length = 8
 		case fieldTypeInt24, fieldTypeLong:
-			value = int32(binary.LittleEndian.Uint32(b[:4]))
+			colValue.Type = fieldType(columnDef.ColumnType)
+			colValue.Value = int32(binary.LittleEndian.Uint32(b[:4]))
 			length = 4
 		case fieldTypeLongLong:
-			value = int64(binary.LittleEndian.Uint64(b[:8]))
+			colValue.Type = fieldTypeLongLong
+			colValue.Value = int64(binary.LittleEndian.Uint64(b[:8]))
 			length = 8
 		case fieldTypeFloat:
-			value = math.Float32frombits(binary.LittleEndian.Uint32(b[:4]))
+			colValue.Type = fieldTypeFloat
+			colValue.Value = math.Float32frombits(binary.LittleEndian.Uint32(b[:4]))
 			length = 4
 		case fieldTypeDouble:
-			value = math.Float64frombits(binary.LittleEndian.Uint64(b[:8]))
+			colValue.Type = fieldTypeDouble
+			colValue.Value = math.Float64frombits(binary.LittleEndian.Uint64(b[:8]))
 			length = 8
 		default:
-			// Find the next special byte (either 0x0b or 0x17)
-			idx := bytes.IndexAny(b, "\x0b\x17\xe17")
-			if idx == -1 {
-				return nil, nil, fmt.Errorf("expected byte not found")
-			}
+			// Read a length-encoded integer
+			stringLength, _, n := readLengthEncodedInteger(b)
+			length = int(stringLength) + n
 
-			// Find the first non-null character
-			start := bytes.IndexFunc(b[:idx], func(r rune) bool {
-				return r != '\x00'
-			})
-			if start == -1 {
-				return nil, nil, fmt.Errorf("non-null character not found")
-			}
+			// Extract the string
+			str := string(b[n : n+int(stringLength)])
 
-			// Extract the string, remove non-printable characters
-			str := string(b[start:idx])
+			// Remove non-printable characters
 			re := regexp.MustCompile(`[^[:print:]\t\r\n]`)
 			cleanedStr := re.ReplaceAllString(str, "")
-			value = cleanedStr
-			length = idx + 1
+
+			colValue.Type = fieldType(columnDef.ColumnType)
+			colValue.Value = cleanedStr
 		}
 
-		row.Columns[column.Name] = value
+		colValue.Name = columnDef.Name
+		row.Columns = append(row.Columns, colValue)
 		b = b[length:]
 	}
-
+	row.Header = rowHeader
 	return row, b, nil
 }
 
@@ -1593,7 +1616,8 @@ func parseResultSet(b []byte) (*ResultSet, error) {
 	b = b[9:]
 
 	// Parse the rows
-	for len(b) > 4 && !bytes.Equal(b[:4], []byte{0xfe, 0x00, 0x00, 0x02, 0x00}) {
+	fmt.Println(!bytes.Equal(b[:4], []byte{0xfe, 0x00, 0x00, 0x02, 0x00}))
+	for len(b) > 5 && !bytes.Equal(b[4:], []byte{0xfe, 0x00, 0x00, 0x02, 0x00}) {
 		var row *Row
 		row, b, err = parseRow(b, columns)
 		if err != nil {
