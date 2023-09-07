@@ -24,6 +24,10 @@ type MockSpec struct {
 	MongoRequests  []MongoRequest  `json:"MongoRequests,omitempty"`
 	MongoResponses []MongoResponse `json:"MongoResponses,omitempty"`
 
+  //for MySql
+	MySqlRequests  []MySQLRequest  `json:"MySqlRequests,omitempty"`
+	MySqlResponses []MySQLResponse `json:"MySqlResponses,omitempty"`
+		
 	//for postgres
 	PostgresReq  *Backend  `json:"postgresRequest,omitempty"`
 	PostgresResp *Frontend `json:"postgresResponse,omitempty"`
