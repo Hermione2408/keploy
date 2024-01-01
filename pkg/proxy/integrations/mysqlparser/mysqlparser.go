@@ -456,6 +456,15 @@ var (
 	expectingHandshakeResponseTest = false
 )
 
+func getfirstSQLMock(configMocks []*models.Mock) (*models.Mock, bool) {
+	for _, mock := range configMocks {
+		if mock.Kind == "SQL" && mock.Spec.MySqlResponses[0].Header.PacketType == "MySQLHandshakeV10" {
+			return mock, true
+		}
+	}
+	return nil, false
+}
+
 func decodeOutgoingMySQL(requestBuffer []byte, clientConn, destConn net.Conn, h *hooks.Hook, logger *zap.Logger, ctx context.Context, delay uint64) {
 	firstLoop := true
 	doHandshakeAgain := true
@@ -465,14 +474,6 @@ func decodeOutgoingMySQL(requestBuffer []byte, clientConn, destConn net.Conn, h 
 	for {
 		configMocks, _ := h.GetConfigMocks()
 		tcsMocks, _ := h.GetTcsMocks()
-		firstSQLMock := func(configMocks []*models.Mock) (*models.Mock, bool) {
-			for _, mock := range configMocks {
-				if mock.Kind == "SQL" {
-					return mock, true
-				}
-			}
-			return nil, false
-		}
 
 		//logger.Debug("Config and TCS Mocks", zap.Any("configMocks", configMocks), zap.Any("tcsMocks", tcsMocks))
 		if firstLoop || doHandshakeAgain {
@@ -480,7 +481,7 @@ func decodeOutgoingMySQL(requestBuffer []byte, clientConn, destConn net.Conn, h 
 				logger.Debug("No more config mocks available")
 				return
 			}
-			sqlMock, found := firstSQLMock(configMocks)
+			sqlMock, found := getfirstSQLMock(configMocks)
 			if !found {
 				logger.Debug("No SQL mock found")
 				return
